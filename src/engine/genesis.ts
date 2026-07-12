@@ -147,11 +147,9 @@ function attempt(config: RunConfig, rngIn: RngState): { world: World | null; rng
     let pos: Vec;
     let guard = 0;
     do {
-      // x spans the whole map (so far-west agents, away from grain, still perish); y is
-      // biased (triangular) toward the grain↔water seam (~y=40) so the population is
-      // scattered across habitable AND dead latitudes — a mix of survivors and deaths.
-      const y = 20 + Math.floor((draw(s, 40) + draw(s, 40)) / 2);
-      pos = { x: draw(s, size), y };
+      // Uniform over passable tiles — no birthplace luck. Survivability must come from the
+      // physics, not from being born on the seam. Agents in the dead north/west perish.
+      pos = { x: draw(s, size), y: draw(s, size) };
       guard++;
     } while (!passable(terrain[idx(size, pos.x, pos.y)]!) && guard < 1000);
     spawnTiles.push(pos);

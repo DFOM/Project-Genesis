@@ -3,21 +3,25 @@
 // the store, or the referee (enforced by lint + dependency-cruiser). This is the SAME `Mind`
 // interface an LLM adapter implements in Phase 3.
 //
-// Survival strategy for a MEMORYLESS agent with bounded vision: carry a RESERVE of BOTH
-// needs. Grain (east) and water (south) are separated, so an agent that only eats where it
-// stands will dehydrate on the way to food. Stocking a buffer of each near the seam lets it
-// eat/drink from inventory and only re-gather when a buffer runs low. Bots that spawn far
-// from the seam never find both and die — that is the intended selection pressure.
+// Agents START EMPTY (genesis gives an empty inventory) and there is NO lucky birthplace
+// (uniform spawn). But grain (east) and water (south) are separate regions, so a memoryless
+// agent that only ate where it stood would dehydrate on the walk to food. So the bot GATHERS
+// A WORKING BUFFER of both while it is at a source and lives off inventory between regions —
+// earned by working, not a starter pack. Whether that buffer is enough to survive is a
+// property of the WORLD PHYSICS (config.ts): reach the seam and you live; born in the dead
+// north/west and you never find both regions and die.
 //
 // Determinism without a mutable RNG: when the bot must "wander" (explore for resources), it
 // derives a direction from a pure hash of (its id, the tick) — no Math.random, no writeback.
 import type { Action, Dir, ItemType, Mind, Perception, PerceivedTile } from '../engine/contract.js';
 
-const CONSUME_BELOW = 45; // eat/drink a held item when the need drops below this
-const SEEK_BELOW = 70; // start travelling toward a resource before a need gets critical
-const RESERVE = 6; // target buffer to carry of each survival item
+const CONSUME_BELOW = 55; // eat/drink a held item when the need drops below this
+const BUFFER = 12; // target units of EACH survival item to carry (earned, not granted)
+const SEEK_BELOW = 90; // travel toward a survival item we're short of before the need gets critical
 const ENERGY_STRANDED = 3; // rest rather than risk a 'too exhausted' MOVE with nowhere to refill
-const ENERGY_LOW = 20; // top up energy when otherwise idle
+const ENERGY_LOW = 25; // top up energy when otherwise idle
+const RUN_LENGTH = 24; // ticks to hold an exploration heading — run-and-tumble covers ground
+// linearly (O(t)); a per-tick random walk only manages O(√t) and never crosses the map in time.
 
 const DIRS: Dir[] = ['N', 'E', 'S', 'W'];
 const DELTA: Record<Dir, { dx: number; dy: number }> = {
@@ -61,46 +65,50 @@ function decide(p: Perception): Action {
   for (const t of p.tiles) tiles.set(tkey(t.x, t.y), t);
   const here = tiles.get(tkey(self.pos.x, self.pos.y));
 
-  // The two survival items, most-urgent (lowest reserve of need) first.
+  // The two survival items, most-urgent (lowest need) first.
   const survival: Array<{ item: ItemType; level: number; consume: Action }> = [
     { item: 'water', level: self.hydration, consume: { type: 'DRINK', item: 'water' } },
     { item: 'grain', level: self.satiation, consume: { type: 'EAT', item: 'grain' } },
   ];
   survival.sort((a, b) => a.level - b.level);
 
-  // 1) Consume the more-urgent need if it's low and we're carrying its item.
+  // 1) Consume the more-urgent need if it's low and we hold its item.
   for (const s of survival) {
     if (s.level < CONSUME_BELOW && inv[s.item] >= 1) return s.consume;
   }
 
-  // 2) Standing on a survival resource we're short of (below RESERVE), with room → gather.
+  // 2) Standing on a survival resource we're still short of (< BUFFER) → gather (most urgent
+  //    first; ore is never gathered — it's useless and would waste capacity).
   for (const s of survival) {
-    if (inv[s.item] < RESERVE && totalHeld < self.capacity && tileHas(here, s.item)) return { type: 'GATHER' };
+    if (inv[s.item] < BUFFER && totalHeld < self.capacity && tileHas(here, s.item)) return { type: 'GATHER' };
   }
 
   // 3) Rest before you're stranded (a MOVE at energy 0 is rejected 'too exhausted').
   if (self.energy <= ENERGY_STRANDED) return { type: 'REST' };
 
-  // 4) Travel toward the nearest visible source of a survival item we're short of. Prefer
-  //    the more-urgent need; a low current level widens the search (SEEK_BELOW).
+  // 4) Short of a survival item (buffer not full, and the need is trending down) → travel
+  //    toward its nearest visible source. Urgent need first. Carrying a buffer of the OTHER
+  //    item is what keeps the agent alive on the walk between the two regions.
   for (const s of survival) {
-    const short = inv[s.item] < RESERVE;
-    const worried = s.level < SEEK_BELOW;
-    if (!short && !worried) continue;
-    const target = nearestSource(p, self.pos, s.item);
-    if (target) {
-      const dir = stepToward(self.pos, target, tiles);
-      if (dir) return { type: 'MOVE', dir };
+    if (inv[s.item] < BUFFER && s.level < SEEK_BELOW) {
+      const target = nearestSource(p, self.pos, s.item);
+      if (target) {
+        const dir = stepToward(self.pos, target, tiles);
+        if (dir) return { type: 'MOVE', dir };
+      }
     }
   }
 
-  // 5) Comfortable (needs fine, buffers stocked) → rest in place near resources rather than
-  //    wander off and drift into a dead zone. Top up energy while we're at it.
-  const comfortable = survival.every((s) => s.level >= SEEK_BELOW && inv[s.item] >= RESERVE);
-  if (comfortable || self.energy < ENERGY_LOW) return { type: 'REST' };
+  // 5) Buffers full / needs comfortable → hold position near resources instead of drifting
+  //    into a dead zone. Top up energy while idle.
+  const bufferedBoth = inv.water >= BUFFER && inv.grain >= BUFFER;
+  const comfortable = survival.every((s) => s.level >= SEEK_BELOW);
+  if (bufferedBoth || comfortable || self.energy < ENERGY_LOW) return { type: 'REST' };
 
-  // 6) Short of something but nothing in sight → explore in a hashed (deterministic) direction.
-  const wanderDir = wander(self.pos, tiles, hash(self.id, p.tick));
+  // 6) Short of something with nothing in sight → EXPLORE. Hold a heading for RUN_LENGTH ticks
+  //    (run-and-tumble) so the agent actually crosses the map to find the other region.
+  const heading = hash(self.id, Math.floor(p.tick / RUN_LENGTH));
+  const wanderDir = wander(self.pos, tiles, heading);
   return wanderDir ? { type: 'MOVE', dir: wanderDir } : { type: 'REST' };
 }
 
@@ -134,13 +142,16 @@ function stepToward(pos: { x: number; y: number }, target: PerceivedTile, tiles:
   return null;
 }
 
+// Prefer the hashed heading; if it's blocked (water/edge) rotate deterministically to the
+// next passable direction. Because `h` is stable across a run, the agent keeps a heading.
 function wander(pos: { x: number; y: number }, tiles: Map<string, PerceivedTile>, h: number): Dir | null {
-  const passableDirs = DIRS.filter((d) => {
+  const start = h % 4;
+  for (let i = 0; i < 4; i++) {
+    const d = DIRS[(start + i) % 4]!;
     const t = tiles.get(tkey(pos.x + DELTA[d].dx, pos.y + DELTA[d].dy));
-    return t !== undefined && t.passable;
-  });
-  if (passableDirs.length === 0) return null;
-  return passableDirs[h % passableDirs.length]!;
+    if (t !== undefined && t.passable) return d;
+  }
+  return null;
 }
 
 // A Mind bound to an agent id. propose() is synchronous here; the interface allows a Promise
