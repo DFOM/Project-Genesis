@@ -1,6 +1,6 @@
 // Engine-internal world state. NOT importable by agents (they get only `Perception`).
 // Every scalar is an integer for cross-machine-safe canonical hashing.
-import type { ItemType } from './contract.js';
+import type { Action, ItemType } from './contract.js';
 import type { RngState } from './rng.js';
 
 export type Terrain = 'plain' | 'hill' | 'water' | 'field';
@@ -54,4 +54,11 @@ export interface RunConfig {
 
 export function idx(size: number, x: number, y: number): number {
   return y * size + x;
+}
+
+// A proposed action tagged with its actor. Agents return bare Action[]; the orchestrator
+// attaches the agent id before handing proposals to the referee.
+export interface ProposedAction {
+  agentId: string;
+  action: Action;
 }

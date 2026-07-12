@@ -3,7 +3,7 @@
 
 export const WORLD_SIZE = 64; // 64×64 tiles
 
-export const PERCEPTION_RADIUS = 5; // an agent sees its tile + this many tiles in each direction
+export const PERCEPTION_RADIUS = 6; // an agent sees its tile + this many tiles in each direction
 
 export const INVENTORY_CAPACITY = 20; // max total items an agent can hold
 

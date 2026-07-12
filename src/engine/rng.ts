@@ -12,7 +12,7 @@ export function seedRng(seed: number): RngState {
 
 // Advance the state and return the next uint32 draw alongside the new state (pure).
 export function nextRng(state: RngState): { state: RngState; value: number } {
-  let a = (state + 0x6d2b79f5) | 0;
+  const a = (state + 0x6d2b79f5) | 0;
   let t = Math.imul(a ^ (a >>> 15), 1 | a);
   t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
   const value = (t ^ (t >>> 14)) >>> 0; // uint32 in [0, 2^32)
