@@ -15,7 +15,9 @@
     "test": "vitest run",
     "test:determinism": "vitest run test/determinism.test.ts",
     "test:balance": "vitest run test/balance.test.ts",
-    "sim:headless": "tsx src/orchestrator/headless.ts"
+    "test:scarcity": "vitest run test/scarcity.test.ts",
+    "sim:headless": "tsx src/orchestrator/headless.ts",
+    "sim:diagnose": "tsx src/orchestrator/diagnose.ts"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.0",

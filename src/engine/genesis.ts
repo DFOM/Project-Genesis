@@ -90,54 +90,86 @@ function attempt(config: RunConfig, rngIn: RngState): { world: World | null; rng
     }
   }
 
-  // 2. Scatter impassable water lake tiles in the south (y ≥ GRAIN_BAND_MAX_Y).
-  const shoreCandidates: Vec[] = [];
-  for (let k = 0; k < C.WATER_TILES; k++) {
-    const x = draw(s, size);
-    const y = C.GRAIN_BAND_MAX_Y + draw(s, size - C.GRAIN_BAND_MAX_Y);
-    terrain[idx(size, x, y)] = 'water';
+  // 2. Water sources: a FEW clustered lakes in the south. Convergence on these few sources
+  //    (rather than many scattered ones) is what forces agents to compete.
+  // Water sources sit just SOUTH of the grain↔water seam, spread DETERMINISTICALLY and evenly
+  // across x. Fixed placement makes the world structure identical across seeds (only spawns and
+  // staggered starts vary), so mortality is robust; the seam concentration forces convergence.
+  const waterCenters: Vec[] = [];
+  for (let p = 0; p < C.WATER_PATCHES; p++) {
+    const cx = Math.max(0, Math.min(size - 1, Math.floor(((p + 0.5) / C.WATER_PATCHES) * size)));
+    const cy = Math.min(size - 1, C.GRAIN_BAND_MAX_Y + 2); // seam's south side
+    waterCenters.push({ x: cx, y: cy });
+    for (let dy = -C.LAKE_HALF; dy <= C.LAKE_HALF; dy++) {
+      for (let dx = -C.LAKE_HALF; dx <= C.LAKE_HALF; dx++) {
+        const x = cx + dx;
+        const y = cy + dy;
+        if (x >= 0 && y >= C.GRAIN_BAND_MAX_Y && x < size && y < size) terrain[idx(size, x, y)] = 'water';
+      }
+    }
   }
-  // Shore = passable tiles adjacent to a water tile (where water NODES may sit).
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      if (!passable(terrain[idx(size, x, y)]!)) continue;
-      const adjWater =
-        (x > 0 && terrain[idx(size, x - 1, y)] === 'water') ||
-        (x < size - 1 && terrain[idx(size, x + 1, y)] === 'water') ||
-        (y > 0 && terrain[idx(size, x, y - 1)] === 'water') ||
-        (y < size - 1 && terrain[idx(size, x, y + 1)] === 'water');
-      if (adjWater) shoreCandidates.push({ x, y });
+  const isShore = (x: number, y: number): boolean => {
+    if (!passable(terrain[idx(size, x, y)]!)) return false;
+    return (
+      (x > 0 && terrain[idx(size, x - 1, y)] === 'water') ||
+      (x < size - 1 && terrain[idx(size, x + 1, y)] === 'water') ||
+      (y > 0 && terrain[idx(size, x, y - 1)] === 'water') ||
+      (y < size - 1 && terrain[idx(size, x, y + 1)] === 'water')
+    );
+  };
+  const shore: Vec[] = [];
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) if (isShore(x, y)) shore.push({ x, y });
+  if (shore.length < C.WATER_PATCHES * C.NODES_PER_PATCH) return { world: null, rng: s.rng };
+
+  // 3. Resource nodes (rich, clustered). At most one node per tile.
+  const nodes: ResourceNode[] = [];
+  const usedTile = new Set<number>();
+  const manh = (a: Vec, b: Vec): number => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+  const place = (item: ItemType, pos: Vec): boolean => {
+    const i = idx(size, pos.x, pos.y);
+    if (usedTile.has(i)) return false;
+    usedTile.add(i);
+    nodes.push({ pos, item, stock: C.NODE_START_STOCK, max: C.NODE_MAX_STOCK, regen: C.NODE_REGEN_PER_TICK });
+    return true;
+  };
+
+  // Water nodes: the nearest unused shore tiles to each lake centre (deterministic — no rng).
+  for (const center of waterCenters) {
+    const ranked = shore
+      .filter((t) => !usedTile.has(idx(size, t.x, t.y)))
+      .sort((a, b) => manh(a, center) - manh(b, center) || a.y - b.y || a.x - b.x);
+    for (let k = 0; k < C.NODES_PER_PATCH && k < ranked.length; k++) place('water', ranked[k]!);
+  }
+
+  // Grain patches sit just NORTH of the seam, spread DETERMINISTICALLY across the eastern x —
+  // facing the water patches across the seam, so the shuttle is always short. Nodes fill fixed
+  // offsets around the patch centre (a tight cluster) on field tiles.
+  const grainOffsets: Vec[] = [
+    { x: 0, y: 0 },
+    { x: 1, y: 0 },
+    { x: -1, y: 0 },
+    { x: 0, y: -1 },
+    { x: 1, y: -1 },
+    { x: -1, y: -1 },
+  ];
+  for (let p = 0; p < C.GRAIN_PATCHES; p++) {
+    const spanX = size - C.GRAIN_MIN_X;
+    const cx = Math.max(C.GRAIN_MIN_X, Math.min(size - 1, C.GRAIN_MIN_X + Math.floor(((p + 0.5) / C.GRAIN_PATCHES) * spanX)));
+    const cy = Math.max(C.ORE_BAND_MAX_Y, C.GRAIN_BAND_MAX_Y - 2); // seam's north side
+    let placed = 0;
+    for (const o of grainOffsets) {
+      if (placed >= C.NODES_PER_PATCH) break;
+      const x = cx + o.x;
+      const y = cy + o.y;
+      if (x >= 0 && y >= 0 && x < size && y < size && terrain[idx(size, x, y)] === 'field' && place('grain', { x, y })) placed++;
     }
   }
 
-  // 3. Resource nodes. One node per tile; ore north, grain east-middle, water on shores.
-  const nodes: ResourceNode[] = [];
-  const usedTile = new Set<number>();
-  const place = (item: ItemType, pos: Vec): void => {
-    const i = idx(size, pos.x, pos.y);
-    if (usedTile.has(i)) return;
-    usedTile.add(i);
-    nodes.push({ pos, item, stock: C.NODE_START_STOCK, max: C.NODE_MAX_STOCK, regen: C.NODE_REGEN_PER_TICK });
-  };
-
-  // Ore: on passable hill tiles in the north band, weighted toward y=0.
+  // Ore: scattered on passable hill tiles in the north. Inert — the money candidate.
   for (let k = 0; k < C.ORE_NODES; k++) {
     const x = draw(s, size);
-    const y = Math.min(draw(s, C.ORE_BAND_MAX_Y), draw(s, C.ORE_BAND_MAX_Y)); // bias toward small y
+    const y = Math.min(draw(s, C.ORE_BAND_MAX_Y), draw(s, C.ORE_BAND_MAX_Y));
     if (passable(terrain[idx(size, x, y)]!)) place('ore', { x, y });
-  }
-  // Grain: on field tiles in the eastern middle band, weighted toward x=63.
-  for (let k = 0; k < C.GRAIN_NODES; k++) {
-    const span = size - C.GRAIN_MIN_X;
-    const x = C.GRAIN_MIN_X + Math.max(draw(s, span), draw(s, span)); // bias toward large x
-    const y = C.ORE_BAND_MAX_Y + draw(s, C.GRAIN_BAND_MAX_Y - C.ORE_BAND_MAX_Y);
-    if (terrain[idx(size, x, y)] === 'field') place('grain', { x, y });
-  }
-  // Water: on shore tiles (guaranteed passable, adjacent to water).
-  if (shoreCandidates.length === 0) return { world: null, rng: s.rng };
-  for (let k = 0; k < C.WATER_NODES; k++) {
-    const pick = shoreCandidates[draw(s, shoreCandidates.length)]!;
-    place('water', pick);
   }
 
   // 4. Spawn agents on random passable tiles.
@@ -157,8 +189,9 @@ function attempt(config: RunConfig, rngIn: RngState): { world: World | null; rng
       id: agentId(i),
       pos,
       inventory: emptyInventory(),
-      satiation: C.SATIATION_START,
-      hydration: C.HYDRATION_START,
+      // Staggered starts (desynchronise the first feeding crisis).
+      satiation: C.SATIATION_START_MIN + draw(s, C.SATIATION_START - C.SATIATION_START_MIN + 1),
+      hydration: C.HYDRATION_START_MIN + draw(s, C.HYDRATION_START - C.HYDRATION_START_MIN + 1),
       energy: C.ENERGY_START,
       health: C.HEALTH_START,
       alive: true,
@@ -208,6 +241,6 @@ export function buildWorld(config: RunConfig): World {
   }
   throw new Error(
     `genesis: could not place a reachable map after ${C.MAX_GENESIS_ATTEMPTS} attempts (seed ${config.seed}). ` +
-      `Check WATER_TILES / node counts / band sizes in engine/config.ts.`,
+      `Check patch counts / lake size / band sizes in engine/config.ts.`,
   );
 }
