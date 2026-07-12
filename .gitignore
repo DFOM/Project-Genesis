@@ -1,0 +1,17 @@
+# OS
+.DS_Store
+
+# Node
+node_modules/
+dist/
+out/
+*.log
+
+# Local env / secrets (keys belong in the OS keychain, never here)
+.env
+.env.*
+
+# SQLite runtime data
+*.sqlite
+*.sqlite-*
+*.db
