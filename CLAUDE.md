@@ -31,6 +31,10 @@ reason. Nothing is true because an agent said it.
    never in a config file, never in a log line.
 7. **Every LLM call is recorded** (prompt, response, model, tokens, cost) so runs
    are auditable and replayable.
+8. **Perception exposes everything the referee can reject on.** If the referee can
+   reject an action based on some condition, `Perception` must expose that condition
+   so the agent can foresee and avoid it. (An LLM cannot learn from a rule it cannot
+   see.)
 
 ## Stack
 

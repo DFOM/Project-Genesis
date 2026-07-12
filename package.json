@@ -1,0 +1,53 @@
+{
+  "name": "genesis",
+  "version": "0.0.1",
+  "description": "A local desktop civilization sandbox where multi-provider AI agents may or may not invent society.",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "dist": "electron-vite build && electron-builder",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint .",
+    "lint:boundaries": "depcruise src --config .dependency-cruiser.cjs",
+    "test": "vitest run",
+    "test:determinism": "vitest run test/determinism.test.ts",
+    "test:balance": "vitest run test/balance.test.ts",
+    "sim:headless": "tsx src/orchestrator/headless.ts"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.0",
+    "@eslint/js": "^9.15.0",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.9.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "@typescript-eslint/eslint-plugin": "^8.15.0",
+    "@typescript-eslint/parser": "^8.15.0",
+    "dependency-cruiser": "^16.5.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "eslint": "^9.15.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.15.0",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.5"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.5.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "build": {
+    "appId": "com.genesis.sandbox",
+    "productName": "Genesis",
+    "files": ["out/**/*"],
+    "mac": { "target": "dmg" },
+    "win": { "target": "nsis" }
+  }
+}
