@@ -66,7 +66,7 @@ export type MemoryFact = { tick: number } & (
   | { kind: 'drank'; item: ItemType }
   | { kind: 'dropped'; item: ItemType; qty: number }
   | { kind: 'rested' }
-  | { kind: 'rejected'; action: Action; reason: string }
+  | { kind: 'rejected'; action: Action; reason: string; tile: Vec2 } // tile = where it tried
   | { kind: 'starving' | 'dehydrating' }
   // ── SOCIAL: acts observed within radius, tagged with the actor's public id ──
   | { kind: 'witnessed_gathered'; who: string; item: ItemType; qty: number; tile: Vec2; lastUnit: boolean }
@@ -92,7 +92,9 @@ export type MemoryEntry =
   | (Span & { kind: 'drank'; item: ItemType })
   | (Span & { kind: 'dropped'; item: ItemType; qty: number })
   | (Span & { kind: 'rested' })
-  | (Span & { kind: 'rejected'; action: Action; reason: string })
+  // rejected coalesces SEMANTICALLY by (reason, tile) — "failed to GATHER at (20,16) ×40" is a
+  // place-bound lesson (the node is dead), the self-directed twin of "watched 11 die at (20,16)".
+  | (Span & { kind: 'rejected'; action: Action; reason: string; tile: Vec2 })
   | (Span & { kind: 'starving' | 'dehydrating' })
   | (Span & { kind: 'witnessed_gathered'; who: string; item: ItemType; tile: Vec2; lastUnitCount: number })
   | (Span & { kind: 'witnessed_dropped'; who: string; item: ItemType; qty: number; tile: Vec2 })

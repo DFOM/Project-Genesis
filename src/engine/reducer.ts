@@ -162,9 +162,13 @@ function recordMemory(w: World, e: Exclude<Event, { type: 'GENESIS' }>): void {
     case 'RESTED':
       remember(agent(w, e.agentId).memory, { tick: now, kind: 'rested' }, now);
       return;
-    case 'ACTION_REJECTED':
-      remember(agent(w, e.agentId).memory, { tick: now, kind: 'rejected', action: e.action, reason: e.reason }, now);
+    case 'ACTION_REJECTED': {
+      // The agent's own tile — it proposes one action per tick, so a rejection means it did not
+      // move; pos is where it tried. Lets rejections coalesce into a place-bound lesson.
+      const a = agent(w, e.agentId);
+      remember(a.memory, { tick: now, kind: 'rejected', action: e.action, reason: e.reason, tile: { x: a.pos.x, y: a.pos.y } }, now);
       return;
+    }
     case 'METABOLIZED':
       for (const d of e.deltas) {
         // starving/dehydrating counters == 1 mark the FIRST tick the need hit 0 (the onset).

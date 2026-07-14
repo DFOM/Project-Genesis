@@ -11,8 +11,9 @@ import { tinyWorld, addAgent, addNode, agentOf } from './helpers.js';
 
 // facts (what the reducer emits) → passed to remember()
 const factDied = (tick: number, who: string, tile = { x: 20, y: 20 }): MemoryFact => ({ tick, kind: 'witnessed_died', who, cause: 'starvation', tile });
-const factRejGather = (tick: number): MemoryFact => ({ tick, kind: 'rejected', action: { type: 'GATHER' }, reason: 'nothing to gather here' });
-const factRejReason = (tick: number, reason: string): MemoryFact => ({ tick, kind: 'rejected', action: { type: 'GATHER' }, reason });
+const factRejGather = (tick: number, tile = { x: 20, y: 16 }): MemoryFact => ({ tick, kind: 'rejected', action: { type: 'GATHER' }, reason: 'nothing to gather here', tile });
+const factRejReason = (tick: number, reason: string, tile = { x: 20, y: 16 }): MemoryFact => ({ tick, kind: 'rejected', action: { type: 'GATHER' }, reason, tile });
+const factGathered = (tick: number): MemoryFact => ({ tick, kind: 'gathered', item: 'grain', qty: 1 });
 const factWg = (tick: number, who: string, lastUnit = true, tile = { x: 5, y: 5 }): MemoryFact => ({ tick, kind: 'witnessed_gathered', who, item: 'grain', qty: 1, tile, lastUnit });
 // entries (the stored aggregate) → passed to score()
 const entryDied = (firstTick: number, lastTick: number, who: string[]): MemoryEntry => ({ firstTick, lastTick, count: who.length, kind: 'witnessed_died', tile: { x: 20, y: 20 }, who });
@@ -47,13 +48,29 @@ describe('memory — syntactic coalescing (the stutter fix)', () => {
     expect(mem.some((m) => m.kind === 'witnessed_gathered' && m.who === 'thief')).toBe(true);
   });
 
-  it('coalesces across an interleaved entry (bounded lookback), not just the immediate predecessor', () => {
+  it('coalesces a syntactic kind across an interleaved entry (bounded lookback)', () => {
     const mem: MemoryEntry[] = [];
-    remember(mem, factRejGather(11), 11);
+    remember(mem, factGathered(11), 11);
     remember(mem, { tick: 11, kind: 'appeared', who: 'x' }, 11); // interleaved
-    remember(mem, factRejGather(12), 12);
-    expect(mem.filter((m) => m.kind === 'rejected')).toHaveLength(1);
-    expect(mem.find((m) => m.kind === 'rejected')!.count).toBe(2);
+    remember(mem, factGathered(12), 12); // must still coalesce into the gather 2 slots back
+    expect(mem.filter((m) => m.kind === 'gathered')).toHaveLength(1);
+    expect(mem.find((m) => m.kind === 'gathered')!.count).toBe(2);
+  });
+});
+
+describe('memory — semantic coalescing of own rejections (place-bound lesson)', () => {
+  it('failing GATHER at one tile compresses into a single lesson; a different tile is separate', () => {
+    const mem: MemoryEntry[] = [];
+    for (let t = 100; t < 140; t++) remember(mem, factRejGather(t, { x: 20, y: 16 }), t); // 40× here
+    remember(mem, factRejGather(300, { x: 20, y: 16 }), 300); // far later, SAME place → merges (non-adjacent)
+    remember(mem, factRejGather(301, { x: 31, y: 9 }), 301); // a different place → its own lesson
+    const rej = mem.filter((m) => m.kind === 'rejected');
+    expect(rej).toHaveLength(2);
+    const here = rej.find((r) => r.kind === 'rejected' && r.tile.x === 20 && r.tile.y === 16)!;
+    if (here.kind !== 'rejected') throw new Error('kind');
+    expect(here.count).toBe(41);
+    expect(here.firstTick).toBe(100);
+    expect(here.lastTick).toBe(300);
   });
 });
 

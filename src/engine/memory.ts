@@ -59,10 +59,12 @@ export function score(e: MemoryEntry, nowTick: number): number {
 }
 
 // The place key for a SEMANTIC kind, or null for syntactic kinds. Deaths key by tile (a deadly
-// place); gathers key by (who, tile) (one agent's reputation at a place).
+// place); gathers key by (who, tile) (a reputation at a place); rejections key by (reason, tile)
+// (a place-bound lesson — "the node at (20,16) is dead").
 function semanticKey(x: MemoryFact | MemoryEntry): string | null {
   if (x.kind === 'witnessed_died') return `d@${x.tile.x},${x.tile.y}`;
   if (x.kind === 'witnessed_gathered') return `g@${x.who}@${x.tile.x},${x.tile.y}`;
+  if (x.kind === 'rejected') return `r@${x.reason}@${x.tile.x},${x.tile.y}`;
   return null;
 }
 
@@ -92,7 +94,7 @@ function factToEntry(f: MemoryFact): MemoryEntry {
     case 'rested':
       return { ...span, kind: 'rested' };
     case 'rejected':
-      return { ...span, kind: 'rejected', action: f.action, reason: f.reason };
+      return { ...span, kind: 'rejected', action: f.action, reason: f.reason, tile: { x: f.tile.x, y: f.tile.y } };
     case 'starving':
     case 'dehydrating':
       return { ...span, kind: f.kind };
