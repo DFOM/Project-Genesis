@@ -3,6 +3,10 @@
 A local desktop app (Electron) running a deterministic civilization simulation
 where AI agents from multiple providers may or may not invent society.
 
+**Read first, every session:** `docs/STATUS.md` — the living project status (phases
+done/in-progress/next, the bugs table). It tells you where the project actually is before
+you touch anything.
+
 Full spec: `docs/DESIGN.md` — **read it before any architectural work.**
 
 ## The one rule
@@ -71,3 +75,6 @@ docs/DESIGN.md   the spec
 - Every new verb needs: a referee rule, a rejection reason, and a test.
 - Prefer a failing test that describes the bug over a fix you can't reproduce.
 - If a feature doesn't make the research question clearer, don't build it.
+- **End every work session by updating `docs/STATUS.md`:** phases done/in-progress/next,
+  and the bugs table (found / fixing / fixed). A stale STATUS.md starts the next session
+  confused — keeping it current is not optional.
