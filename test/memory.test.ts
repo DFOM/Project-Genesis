@@ -1,20 +1,23 @@
-// Social memory: records own + witnessed acts (within radius), coalesces consecutive identical
-// facts into one slot, is bounded and evicted by salience-that-decays (old grief eventually
-// yields to fresh events), and replays byte-identically.
+// Social memory: records own + witnessed acts (within radius); coalesces consecutive identical
+// facts (syntactic) AND same-kind-same-place facts (semantic — a place-bound generalization);
+// is bounded and evicted by salience-that-decays; replays byte-identically.
 import { describe, it, expect } from 'vitest';
 import { remember, score } from '../src/engine/memory.js';
-import type { MemoryEntry } from '../src/engine/index.js';
+import type { MemoryEntry, MemoryFact } from '../src/engine/index.js';
 import * as C from '../src/engine/config.js';
 import { step } from '../src/referee/index.js';
 import { runHeadless, replayToState } from '../src/orchestrator/harness.js';
 import { tinyWorld, addAgent, addNode, agentOf } from './helpers.js';
 
-const died = (tick: number): MemoryEntry => ({ tick, lastTick: tick, count: 1, kind: 'witnessed_died', who: 'ghost', cause: 'starvation', tile: { x: 0, y: 0 } });
-const gathered = (tick: number): MemoryEntry => ({ tick, lastTick: tick, count: 1, kind: 'gathered', item: 'grain', qty: 1 });
-const rested = (tick: number): MemoryEntry => ({ tick, lastTick: tick, count: 1, kind: 'rested' });
-const rejGather = (tick: number): MemoryEntry => ({ tick, lastTick: tick, count: 1, kind: 'rejected', action: { type: 'GATHER' }, reason: 'nothing to gather here' });
-const wg = (tick: number, who: string): MemoryEntry => ({ tick, lastTick: tick, count: 1, kind: 'witnessed_gathered', who, item: 'grain', qty: 1, tile: { x: 5, y: 5 }, lastUnit: true });
-const rejReason = (tick: number, reason: string): MemoryEntry => ({ tick, lastTick: tick, count: 1, kind: 'rejected', action: { type: 'GATHER' }, reason });
+// facts (what the reducer emits) → passed to remember()
+const factDied = (tick: number, who: string, tile = { x: 20, y: 20 }): MemoryFact => ({ tick, kind: 'witnessed_died', who, cause: 'starvation', tile });
+const factRejGather = (tick: number): MemoryFact => ({ tick, kind: 'rejected', action: { type: 'GATHER' }, reason: 'nothing to gather here' });
+const factRejReason = (tick: number, reason: string): MemoryFact => ({ tick, kind: 'rejected', action: { type: 'GATHER' }, reason });
+const factWg = (tick: number, who: string, lastUnit = true, tile = { x: 5, y: 5 }): MemoryFact => ({ tick, kind: 'witnessed_gathered', who, item: 'grain', qty: 1, tile, lastUnit });
+// entries (the stored aggregate) → passed to score()
+const entryDied = (firstTick: number, lastTick: number, who: string[]): MemoryEntry => ({ firstTick, lastTick, count: who.length, kind: 'witnessed_died', tile: { x: 20, y: 20 }, who });
+const entryRested = (firstTick: number, lastTick: number): MemoryEntry => ({ firstTick, lastTick, count: 1, kind: 'rested' });
+const entryGathered = (firstTick: number, lastTick: number): MemoryEntry => ({ firstTick, lastTick, count: 1, kind: 'gathered', item: 'grain', qty: 1 });
 
 describe('memory — social witnessing', () => {
   it('an in-radius observer records who took the last unit; a far agent does not', () => {
@@ -26,57 +29,80 @@ describe('memory — social witnessing', () => {
     const { world } = step(w, [{ agentId: 'agent-01', action: { type: 'GATHER' } }]);
     const seen = agentOf(world, 'agent-00').memory.find((m) => m.kind === 'witnessed_gathered');
     expect(seen && seen.kind === 'witnessed_gathered' && seen.who).toBe('agent-01');
+    expect(seen && seen.kind === 'witnessed_gathered' && seen.lastUnitCount).toBeGreaterThan(0);
     expect(agentOf(world, 'agent-02').memory.some((m) => m.kind === 'witnessed_gathered')).toBe(false);
   });
 });
 
-describe('memory — coalescing (the stutter fix)', () => {
+describe('memory — syntactic coalescing (the stutter fix)', () => {
   it('19 identical rejections collapse into ONE slot, freeing room for a witnessed_gathered', () => {
     const mem: MemoryEntry[] = [];
-    remember(mem, wg(10, 'thief'), 10); // the socially meaningful fact
-    for (let t = 11; t <= 29; t++) remember(mem, rejGather(t), t); // 19 identical rejections
+    remember(mem, factWg(10, 'thief'), 10);
+    for (let t = 11; t <= 29; t++) remember(mem, factRejGather(t), t);
     const rej = mem.filter((m) => m.kind === 'rejected');
-    expect(rej).toHaveLength(1); // one slot, not nineteen
+    expect(rej).toHaveLength(1);
     expect(rej[0]!.count).toBe(19);
-    expect(rej[0]!.tick).toBe(11);
+    expect(rej[0]!.firstTick).toBe(11);
     expect(rej[0]!.lastTick).toBe(29);
-    // …and the witnessed_gathered from the same window was NOT crowded out
     expect(mem.some((m) => m.kind === 'witnessed_gathered' && m.who === 'thief')).toBe(true);
   });
 
   it('coalesces across an interleaved entry (bounded lookback), not just the immediate predecessor', () => {
     const mem: MemoryEntry[] = [];
-    remember(mem, rejGather(11), 11);
+    remember(mem, factRejGather(11), 11);
     remember(mem, { tick: 11, kind: 'appeared', who: 'x' }, 11); // interleaved
-    remember(mem, rejGather(12), 12); // must still coalesce into the rejection 2 slots back
-    const rej = mem.filter((m) => m.kind === 'rejected');
-    expect(rej).toHaveLength(1);
-    expect(rej[0]!.count).toBe(2);
-    expect(mem.some((m) => m.kind === 'appeared')).toBe(true);
+    remember(mem, factRejGather(12), 12);
+    expect(mem.filter((m) => m.kind === 'rejected')).toHaveLength(1);
+    expect(mem.find((m) => m.kind === 'rejected')!.count).toBe(2);
+  });
+});
+
+describe('memory — semantic coalescing (place-bound generalization)', () => {
+  it('11 deaths at one tile occupy one slot, keeping the count and last-5 witnesses', () => {
+    const mem: MemoryEntry[] = [];
+    for (let i = 0; i < 11; i++) remember(mem, factDied(468 + i * 10, `agent-${i}`), 468 + i * 10);
+    const wd = mem.filter((m) => m.kind === 'witnessed_died');
+    expect(wd).toHaveLength(1);
+    const e = wd[0]!;
+    if (e.kind !== 'witnessed_died') throw new Error('kind');
+    expect(e.count).toBe(11);
+    expect(e.firstTick).toBe(468);
+    expect(e.lastTick).toBe(468 + 100);
+    expect(e.who).toEqual(['agent-6', 'agent-7', 'agent-8', 'agent-9', 'agent-10']); // last 5, most recent last
+  });
+
+  it("one agent's repeated takings at a tile compress into a reputation slot", () => {
+    const mem: MemoryEntry[] = [];
+    for (let t = 100; t < 109; t++) remember(mem, factWg(t, 'agent-07', true), 100); // 9×, all last-unit
+    const wg = mem.filter((m) => m.kind === 'witnessed_gathered');
+    expect(wg).toHaveLength(1);
+    const e = wg[0]!;
+    if (e.kind !== 'witnessed_gathered') throw new Error('kind');
+    expect(e.who).toBe('agent-07');
+    expect(e.count).toBe(9);
+    expect(e.lastUnitCount).toBe(9);
   });
 });
 
 describe('memory — salience eviction with decay', () => {
   it('a witnessed death survives sustained pressure from DISTINCT routine entries', () => {
     const mem: MemoryEntry[] = [];
-    remember(mem, died(10), 10);
-    for (let i = 0; i < 25; i++) remember(mem, wg(11 + i, `a${i}`), 11 + i); // distinct → no coalesce
+    remember(mem, factDied(10, 'ghost'), 10);
+    for (let i = 0; i < 25; i++) remember(mem, factWg(11 + i, `a${i}`, true, { x: i, y: 5 }), 11 + i); // distinct place → distinct slots
     expect(mem.length).toBe(C.MEMORY_CAPACITY);
-    expect(mem.some((m) => m.kind === 'witnessed_died')).toBe(true); // a routine witnessed_gathered was evicted, not the death
+    expect(mem.some((m) => m.kind === 'witnessed_died')).toBe(true);
   });
 
   it('but a STALE death is eventually displaced by fresh salient events — memory is not frozen', () => {
     const mem: MemoryEntry[] = [];
-    remember(mem, died(10), 10);
-    // ~1100 ticks later, 20 DISTINCT fresh rejections fill the buffer; the decayed death is lowest.
-    for (let i = 0; i < C.MEMORY_CAPACITY; i++) remember(mem, rejReason(1100, `r${i}`), 1100);
+    remember(mem, factDied(10, 'ghost'), 10);
+    for (let i = 0; i < C.MEMORY_CAPACITY; i++) remember(mem, factRejReason(1100, `r${i}`), 1100);
     expect(mem.some((m) => m.kind === 'witnessed_died')).toBe(false);
   });
 
   it('late-run tier regression: log-decay keeps tiers meaningful (linear would not)', () => {
-    expect(score(died(4900), 4900)).toBeGreaterThan(score(rested(4900), 4900));
-    // a VERY old death still outranks a fresh routine gather (linear decay would flip this).
-    expect(score(died(100), 4900)).toBeGreaterThan(score(gathered(4900), 4900));
+    expect(score(entryDied(4900, 4900, ['x']), 4900)).toBeGreaterThan(score(entryRested(4900, 4900), 4900));
+    expect(score(entryDied(100, 100, ['x']), 4900)).toBeGreaterThan(score(entryGathered(4900, 4900), 4900));
   });
 });
 

@@ -85,7 +85,7 @@ describe('perception leak — witnessing respects the radius', () => {
     expect(wg).toBeDefined();
     if (wg && wg.kind === 'witnessed_gathered') {
       expect(wg.who).toBe('agent-01');
-      expect(wg.lastUnit).toBe(true);
+      expect(wg.lastUnitCount).toBeGreaterThan(0);
       // observable-only: no B private state on the entry
       for (const forbidden of ['inventory', 'satiation', 'hydration', 'energy', 'health']) {
         expect(wg).not.toHaveProperty(forbidden);

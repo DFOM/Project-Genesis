@@ -54,10 +54,12 @@ export interface Perception {
   memory: MemoryEntry[]; // own + witnessed recent events, oldest→newest, ≤ MEMORY_CAPACITY
 }
 
-// The kind + observable payload of a remembered event. Every field is observable: item/qty/
-// tile/cause and a public agent id (`who`) — NEVER another agent's inventory, satiation,
-// hydration, energy, or health. ('moved' is deliberately not recorded — it's noise.)
-export type MemoryKind =
+type Vec2 = { x: number; y: number };
+
+// A single observed fact, as constructed by the reducer per event (one occurrence). Every field
+// is observable: item/qty/tile/cause and a public agent id (`who`) — NEVER another agent's
+// inventory, satiation, hydration, energy, or health. ('moved' is not recorded — it's noise.)
+export type MemoryFact = { tick: number } & (
   // ── the agent's OWN experienced events ──
   | { kind: 'gathered'; item: ItemType; qty: number }
   | { kind: 'ate'; item: ItemType }
@@ -65,23 +67,39 @@ export type MemoryKind =
   | { kind: 'dropped'; item: ItemType; qty: number }
   | { kind: 'rested' }
   | { kind: 'rejected'; action: Action; reason: string }
-  | { kind: 'starving' | 'dehydrating' } // the tick one of its needs hit 0
-  // ── SOCIAL: acts the agent OBSERVED within its radius, tagged with the actor's public id ──
-  | { kind: 'witnessed_gathered'; who: string; item: ItemType; qty: number; tile: { x: number; y: number }; lastUnit: boolean }
-  | { kind: 'witnessed_dropped'; who: string; item: ItemType; qty: number; tile: { x: number; y: number } }
-  | { kind: 'witnessed_died'; who: string; cause: 'starvation' | 'dehydration'; tile: { x: number; y: number } }
+  | { kind: 'starving' | 'dehydrating' }
+  // ── SOCIAL: acts observed within radius, tagged with the actor's public id ──
+  | { kind: 'witnessed_gathered'; who: string; item: ItemType; qty: number; tile: Vec2; lastUnit: boolean }
+  | { kind: 'witnessed_dropped'; who: string; item: ItemType; qty: number; tile: Vec2 }
+  | { kind: 'witnessed_died'; who: string; cause: 'starvation' | 'dehydration'; tile: Vec2 }
   | { kind: 'witnessed_distress'; who: string }
-  | { kind: 'appeared'; who: string } // a stranger entered view
-  | { kind: 'departed'; who: string }; // …or left it
+  | { kind: 'appeared'; who: string }
+  | { kind: 'departed'; who: string }
+);
 
-// A single observed fact, as constructed by the reducer (before it enters the buffer).
-export type MemoryFact = { tick: number } & MemoryKind;
-
-// A stored memory entry: a fact plus a run-length COALESCING of consecutive identical facts —
-// `count` occurrences spanning `tick`…`lastTick`. Coalescing means "I tried GATHER and was
-// rejected" recorded twenty times occupies ONE slot, not twenty, so a single stutter can't
-// evict everything else. (Rendered to an LLM as e.g. "t445–467: tried GATHER ×19, rejected: …".)
-export type MemoryEntry = MemoryFact & { lastTick: number; count: number };
+// A stored buffer entry: a COALESCED aggregate spanning firstTick…lastTick with a `count`.
+//   • SYNTACTIC coalescing (most kinds): consecutive identical facts (within a bounded lookback)
+//     collapse — "tried GATHER ×19, rejected: nothing to gather here" is one slot.
+//   • SEMANTIC coalescing (witnessed_died / witnessed_gathered): same kind at the same TILE
+//     collapse even when non-adjacent — a place-bound generalization (the first *inference* in
+//     the system, not a bare fact): "watched 11 die at (20,16), recently agent-19" is one slot;
+//     "agent-07 took from (X,Y) 9×, 7 the last unit" is a compressed reputation. `who` is the
+//     last-5 witnessed ids; deaths key by tile, gathers key by (who, tile).
+type Span = { firstTick: number; lastTick: number; count: number };
+export type MemoryEntry =
+  | (Span & { kind: 'gathered'; item: ItemType; qty: number })
+  | (Span & { kind: 'ate'; item: ItemType })
+  | (Span & { kind: 'drank'; item: ItemType })
+  | (Span & { kind: 'dropped'; item: ItemType; qty: number })
+  | (Span & { kind: 'rested' })
+  | (Span & { kind: 'rejected'; action: Action; reason: string })
+  | (Span & { kind: 'starving' | 'dehydrating' })
+  | (Span & { kind: 'witnessed_gathered'; who: string; item: ItemType; tile: Vec2; lastUnitCount: number })
+  | (Span & { kind: 'witnessed_dropped'; who: string; item: ItemType; qty: number; tile: Vec2 })
+  | (Span & { kind: 'witnessed_died'; tile: Vec2; who: string[] })
+  | (Span & { kind: 'witnessed_distress'; who: string })
+  | (Span & { kind: 'appeared'; who: string })
+  | (Span & { kind: 'departed'; who: string });
 
 export interface PerceivedTile {
   x: number;
