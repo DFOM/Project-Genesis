@@ -78,3 +78,6 @@ docs/DESIGN.md   the spec
 - **End every work session by updating `docs/STATUS.md`:** phases done/in-progress/next,
   and the bugs table (found / fixing / fixed). A stale STATUS.md starts the next session
   confused — keeping it current is not optional.
+- **Commit and push after each approved unit of work:** `git add -A && git commit` with a
+  clear message, then `git push`. If a push is ever rejected, **stop and report** — never
+  force-push without asking.
