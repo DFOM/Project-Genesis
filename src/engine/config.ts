@@ -74,3 +74,5 @@ export const MAX_GENESIS_ATTEMPTS = 100; // bounded reachability retry — throw
 export const MEMORY_CAPACITY = 20; // entries retained per agent
 export const TIER_WEIGHT = 500; // points per salience tier
 export const DECAY_WEIGHT = 100; // logarithmic age decay: floor(DECAY_WEIGHT * log2(1 + age))
+export const COALESCE_LOOKBACK = 5; // coalesce a repeat into a matching entry within the last N,
+// so a single interleaved 'appeared' can't split a run of identical rejections into two stutters

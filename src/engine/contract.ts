@@ -54,25 +54,34 @@ export interface Perception {
   memory: MemoryEntry[]; // own + witnessed recent events, oldest→newest, ≤ MEMORY_CAPACITY
 }
 
-// A bounded, salience-ranked record of what this agent did and what it SAW others do (within
-// radius). Every field is observable: item/qty/tile/cause and a public agent id (`who`) — it
-// NEVER carries another agent's inventory, satiation, hydration, energy, or health.
-export type MemoryEntry =
-  // ── the agent's OWN experienced events ('moved' is deliberately not recorded — noise) ──
-  | { tick: number; kind: 'gathered'; item: ItemType; qty: number }
-  | { tick: number; kind: 'ate'; item: ItemType }
-  | { tick: number; kind: 'drank'; item: ItemType }
-  | { tick: number; kind: 'dropped'; item: ItemType; qty: number }
-  | { tick: number; kind: 'rested' }
-  | { tick: number; kind: 'rejected'; action: Action; reason: string }
-  | { tick: number; kind: 'starving' | 'dehydrating' } // the tick one of its needs hit 0
+// The kind + observable payload of a remembered event. Every field is observable: item/qty/
+// tile/cause and a public agent id (`who`) — NEVER another agent's inventory, satiation,
+// hydration, energy, or health. ('moved' is deliberately not recorded — it's noise.)
+export type MemoryKind =
+  // ── the agent's OWN experienced events ──
+  | { kind: 'gathered'; item: ItemType; qty: number }
+  | { kind: 'ate'; item: ItemType }
+  | { kind: 'drank'; item: ItemType }
+  | { kind: 'dropped'; item: ItemType; qty: number }
+  | { kind: 'rested' }
+  | { kind: 'rejected'; action: Action; reason: string }
+  | { kind: 'starving' | 'dehydrating' } // the tick one of its needs hit 0
   // ── SOCIAL: acts the agent OBSERVED within its radius, tagged with the actor's public id ──
-  | { tick: number; kind: 'witnessed_gathered'; who: string; item: ItemType; qty: number; tile: { x: number; y: number }; lastUnit: boolean }
-  | { tick: number; kind: 'witnessed_dropped'; who: string; item: ItemType; qty: number; tile: { x: number; y: number } }
-  | { tick: number; kind: 'witnessed_died'; who: string; cause: 'starvation' | 'dehydration'; tile: { x: number; y: number } }
-  | { tick: number; kind: 'witnessed_distress'; who: string }
-  | { tick: number; kind: 'appeared'; who: string } // a stranger entered view
-  | { tick: number; kind: 'departed'; who: string }; // …or left it
+  | { kind: 'witnessed_gathered'; who: string; item: ItemType; qty: number; tile: { x: number; y: number }; lastUnit: boolean }
+  | { kind: 'witnessed_dropped'; who: string; item: ItemType; qty: number; tile: { x: number; y: number } }
+  | { kind: 'witnessed_died'; who: string; cause: 'starvation' | 'dehydration'; tile: { x: number; y: number } }
+  | { kind: 'witnessed_distress'; who: string }
+  | { kind: 'appeared'; who: string } // a stranger entered view
+  | { kind: 'departed'; who: string }; // …or left it
+
+// A single observed fact, as constructed by the reducer (before it enters the buffer).
+export type MemoryFact = { tick: number } & MemoryKind;
+
+// A stored memory entry: a fact plus a run-length COALESCING of consecutive identical facts —
+// `count` occurrences spanning `tick`…`lastTick`. Coalescing means "I tried GATHER and was
+// rejected" recorded twenty times occupies ONE slot, not twenty, so a single stutter can't
+// evict everything else. (Rendered to an LLM as e.g. "t445–467: tried GATHER ×19, rejected: …".)
+export type MemoryEntry = MemoryFact & { lastTick: number; count: number };
 
 export interface PerceivedTile {
   x: number;

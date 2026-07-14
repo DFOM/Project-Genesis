@@ -15,3 +15,9 @@ out/
 *.sqlite
 *.sqlite-*
 *.db
+
+# Research run artifacts (charted from the CSVs, not committed)
+/research/
+
+# Throwaway probes
+/dump_mem.mts

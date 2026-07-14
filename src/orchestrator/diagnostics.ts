@@ -20,6 +20,37 @@ export interface DeathRecord {
   classification: 'search-failure' | 'competition';
 }
 
+// One row per agent per run — the unit of analysis once models attach in Phase 4 (every
+// question — "do Claude agents survive longer? hoard more? witness more deaths?" — is a
+// GROUP BY on this). `model`/`provider` are the Phase-4 slots (null under heuristic bots).
+export interface AgentRecord {
+  seed: number;
+  id: string;
+  spawnX: number;
+  spawnY: number;
+  alive: boolean;
+  deathTick: number | null;
+  deathCause: 'starvation' | 'dehydration' | null;
+  finalSatiation: number;
+  finalHydration: number;
+  finalEnergy: number;
+  finalHealth: number;
+  totalGathered: number;
+  totalEaten: number;
+  totalDrank: number;
+  rejections: number;
+  deathsWitnessed: number;
+  model: string | null;
+  provider: string | null;
+}
+
+// The dramatic beats of a run (not the full ~55k-event log) → events/<seed>.jsonl.
+export type NotableEvent =
+  | { tick: number; type: 'death'; who: string; cause: string; x: number; y: number }
+  | { tick: number; type: 'distress'; who: string; need: 'satiation' | 'hydration'; x: number; y: number }
+  | { tick: number; type: 'contested_last_unit'; x: number; y: number }
+  | { tick: number; type: 'node_depleted'; x: number; y: number; item: string };
+
 export interface DiagnosticReport {
   seed: number;
   ticks: number;
@@ -50,6 +81,9 @@ export interface DiagnosticReport {
   deaths: DeathRecord[];
   searchFailureDeaths: number;
   competitionDeaths: number;
+  // per-agent unit of analysis + the run's notable events
+  agents: AgentRecord[];
+  notableEvents: NotableEvent[];
 }
 
 function manhattan(ax: number, ay: number, bx: number, by: number): number {
@@ -77,6 +111,33 @@ export function diagnose(seed: number, ticks: number): DiagnosticReport {
   let lastUnitDecisions = 0;
   const rejections: Record<string, number> = {};
   const deaths: DeathRecord[] = [];
+  const notableEvents: NotableEvent[] = [];
+  const zeroNodes = new Set<string>(); // nodes currently at zero-trough (for depletion onset)
+
+  // Per-agent records, seeded with spawn tiles from the initial world.
+  const agentRecs = new Map<string, AgentRecord>();
+  for (const a of world.agents) {
+    agentRecs.set(a.id, {
+      seed,
+      id: a.id,
+      spawnX: a.pos.x,
+      spawnY: a.pos.y,
+      alive: true,
+      deathTick: null,
+      deathCause: null,
+      finalSatiation: 0,
+      finalHydration: 0,
+      finalEnergy: 0,
+      finalHealth: 0,
+      totalGathered: 0,
+      totalEaten: 0,
+      totalDrank: 0,
+      rejections: 0,
+      deathsWitnessed: 0,
+      model: null,
+      provider: null,
+    });
+  }
 
   // node-stock histogram over grain+water nodes, sampled at the TROUGH (after this tick's
   // gathers, before regen) — that is the stock an arriving agent actually faces. Sampling
@@ -138,9 +199,11 @@ export function diagnose(seed: number, ticks: number): DiagnosticReport {
       switch (e.type) {
         case 'ATE':
           grainConsumed++;
+          agentRecs.get(e.agentId)!.totalEaten++;
           break;
         case 'DRANK':
           waterConsumed++;
+          agentRecs.get(e.agentId)!.totalDrank++;
           break;
         case 'REGEN': {
           const node = world.nodes.find((n) => n.pos.x === e.tile.x && n.pos.y === e.tile.y);
@@ -150,9 +213,20 @@ export function diagnose(seed: number, ticks: number): DiagnosticReport {
         }
         case 'GATHERED':
           gatheredTiles.add(`${e.tile.x},${e.tile.y}`);
+          agentRecs.get(e.agentId)!.totalGathered += e.qty;
+          break;
+        case 'METABOLIZED':
+          for (const d of e.deltas) {
+            if (d.starvingTicksAfter === 1 || d.dehydratingTicksAfter === 1) {
+              const a = world.agents.find((x) => x.id === d.agentId)!;
+              if (d.starvingTicksAfter === 1) notableEvents.push({ tick: t + 1, type: 'distress', who: d.agentId, need: 'satiation', x: a.pos.x, y: a.pos.y });
+              if (d.dehydratingTicksAfter === 1) notableEvents.push({ tick: t + 1, type: 'distress', who: d.agentId, need: 'hydration', x: a.pos.x, y: a.pos.y });
+            }
+          }
           break;
         case 'ACTION_REJECTED': {
           rejections[e.reason] = (rejections[e.reason] ?? 0) + 1;
+          agentRecs.get(e.agentId)!.rejections++;
           if (e.action.type === 'GATHER' && e.reason === 'nothing to gather here') {
             const a = world.agents.find((x) => x.id === e.agentId);
             if (a) emptyRejectTiles.add(`${a.pos.x},${a.pos.y}`);
@@ -186,6 +260,17 @@ export function diagnose(seed: number, ticks: number): DiagnosticReport {
             nearestRelevantStock: nearestRelStock,
             classification,
           });
+          const rec = agentRecs.get(e.agentId)!;
+          rec.deathTick = t + 1;
+          rec.deathCause = e.cause;
+          notableEvents.push({ tick: t + 1, type: 'death', who: e.agentId, cause: e.cause, x: a.pos.x, y: a.pos.y });
+          // Who saw it: alive agents within perception radius of the death tile.
+          for (const other of world.agents) {
+            if (other.id === e.agentId || !other.alive) continue;
+            if (Math.abs(other.pos.x - a.pos.x) <= C.PERCEPTION_RADIUS && Math.abs(other.pos.y - a.pos.y) <= C.PERCEPTION_RADIUS) {
+              agentRecs.get(other.id)!.deathsWitnessed++;
+            }
+          }
           break;
         }
         default:
@@ -194,7 +279,12 @@ export function diagnose(seed: number, ticks: number): DiagnosticReport {
     }
     // A "last-unit decision": same tick & tile, one agent GATHERED and another was told
     // 'nothing to gather here' — the seeded shuffle picked the winner of the last unit.
-    for (const tile of emptyRejectTiles) if (gatheredTiles.has(tile)) lastUnitDecisions++;
+    for (const tile of emptyRejectTiles)
+      if (gatheredTiles.has(tile)) {
+        lastUnitDecisions++;
+        const [cx, cy] = tile.split(',').map(Number) as [number, number];
+        notableEvents.push({ tick: t + 1, type: 'contested_last_unit', x: cx, y: cy });
+      }
 
     // 4) Sample node-stock TROUGH: apply this tick's gathers, snapshot, then apply regen.
     //    (Within a tick the referee emits all GATHERED before any REGEN.)
@@ -209,6 +299,17 @@ export function diagnose(seed: number, ticks: number): DiagnosticReport {
       stockHist[Math.max(0, Math.min(s, histSize - 1))]!++;
       nodeSamples++;
       if (s < C.GATHER_QTY) nodeLowSamples++;
+      // node_depleted fires once, on the transition to a zero trough (not every tick it's dry).
+      if (s === 0) {
+        if (!zeroNodes.has(k)) {
+          zeroNodes.add(k);
+          const [nx, ny] = k.split(',').map(Number) as [number, number];
+          const node = world.nodes.find((nd) => nd.pos.x === nx && nd.pos.y === ny)!;
+          notableEvents.push({ tick: t + 1, type: 'node_depleted', x: nx, y: ny, item: node.item });
+        }
+      } else {
+        zeroNodes.delete(k);
+      }
     }
     for (const e of events) {
       if (e.type === 'REGEN') {
@@ -232,6 +333,16 @@ export function diagnose(seed: number, ticks: number): DiagnosticReport {
 
   const grainConsumedPerTick = grainConsumed / ticks;
   const waterConsumedPerTick = waterConsumed / ticks;
+
+  // Finalize per-agent records from the final world.
+  for (const a of world.agents) {
+    const rec = agentRecs.get(a.id)!;
+    rec.alive = a.alive;
+    rec.finalSatiation = a.satiation;
+    rec.finalHydration = a.hydration;
+    rec.finalEnergy = a.energy;
+    rec.finalHealth = a.health;
+  }
 
   return {
     seed,
@@ -257,6 +368,8 @@ export function diagnose(seed: number, ticks: number): DiagnosticReport {
     deaths,
     searchFailureDeaths: deaths.filter((d) => d.classification === 'search-failure').length,
     competitionDeaths: deaths.filter((d) => d.classification === 'competition').length,
+    agents: [...agentRecs.values()],
+    notableEvents,
   };
 }
 

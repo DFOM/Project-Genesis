@@ -1,20 +1,17 @@
-// Pure, deterministic memory scoring + bounded eviction for the per-agent social memory.
-// Salience = an importance TIER minus a LOGARITHMIC age penalty, so a witnessed death dominates
-// routine entries for a long while yet a stale death is eventually displaced by an accumulation
-// of fresh salient events — memory is never permanently frozen, and reputation (recent
-// behaviour) can be revised. Linear decay would instead degenerate the tiers into a plain
-// recency ring (a tick-4990 `rested` would outscore a tick-100 `witnessed_died`).
+// Pure, deterministic memory: run-length COALESCING of consecutive identical facts, plus
+// bounded eviction by an importance TIER minus a LOGARITHMIC age penalty. Coalescing stops a
+// stutter (twenty identical "gather rejected" in a row) from filling the buffer and evicting
+// everything socially meaningful; salience-with-decay lets a witnessed death dominate for a long
+// while yet eventually yield to fresh events (never frozen — reputation stays revisable).
 //
 // Arithmetic (TIER_WEIGHT=500, DECAY_WEIGHT=100): a `witnessed_died` (tier 12) falls below a
 // FRESH `rejected` (tier 10) when 100·log2(1+age) > (12−10)·500 = 1000 → age > 2^10 − 1 ≈ 1023
-// ticks. It falls below a FRESH `gathered` (tier 5) only when 100·log2(1+age) > 3500 →
-// age > 2^35 ≈ 3.4×10^10 → effectively never within a run (routine gathers never displace a
-// remembered death; only fresher salient events do).
+// ticks. It falls below a FRESH `gathered` (tier 5) only when age > 2^35 → effectively never.
 import * as C from './config.js';
-import type { MemoryEntry } from './contract.js';
+import type { MemoryEntry, MemoryFact } from './contract.js';
 
 // Importance tier (higher = more worth keeping). Age is applied separately in score().
-export function tier(e: MemoryEntry): number {
+export function tier(e: MemoryEntry | MemoryFact): number {
   switch (e.kind) {
     case 'witnessed_died':
       return 12;
@@ -48,24 +45,46 @@ export function tier(e: MemoryEntry): number {
   }
 }
 
-// Decayed salience. Integer-floored so comparisons are stable. NEVER serialized — only the
-// resulting memory array is — so this stays inside the integer-math rule.
+// Decayed salience. Age is measured from `lastTick` (the most-recent occurrence), so a coalesced
+// entry that keeps recurring stays fresh. Integer-floored; never serialized (only the entry is).
 export function score(e: MemoryEntry, nowTick: number): number {
-  const age = nowTick - e.tick;
+  const age = nowTick - e.lastTick;
   return tier(e) * C.TIER_WEIGHT - Math.floor(C.DECAY_WEIGHT * Math.log2(1 + age));
 }
 
-// Append `entry`; if that pushes past MEMORY_CAPACITY, evict the LOWEST-scoring entry. Ties are
-// broken by older tick, then earliest array index — fully deterministic, never object identity.
-// Mutates `memory` in place (the reducer mutates World for performance; see reducer.ts).
-export function remember(memory: MemoryEntry[], entry: MemoryEntry, nowTick: number): void {
-  memory.push(entry);
+// Signature of a fact's kind + payload (excluding tick/lastTick/count) — deterministic; two
+// facts coalesce iff their signatures are equal. Keys keep construction order, identical between
+// a fresh fact and a stored entry built from the same shape.
+function signature(e: MemoryEntry | MemoryFact): string {
+  const rest: Record<string, unknown> = { ...e };
+  delete rest.tick;
+  delete rest.lastTick;
+  delete rest.count;
+  return JSON.stringify(rest);
+}
+
+// Record `fact`: if it matches an entry within the last COALESCE_LOOKBACK (same kind + payload),
+// coalesce in place (bump count, extend lastTick) — one slot, not a new one. Bounded lookback (not
+// just the immediately-preceding entry) so a single interleaved `appeared` between two rejections
+// doesn't split the run back into a stutter. Otherwise append; if that pushes past MEMORY_CAPACITY,
+// evict the LOWEST-scoring entry. Ties: older lastTick, then earliest array index — deterministic.
+export function remember(memory: MemoryEntry[], fact: MemoryFact, nowTick: number): void {
+  const sig = signature(fact);
+  const start = Math.max(0, memory.length - C.COALESCE_LOOKBACK);
+  for (let i = memory.length - 1; i >= start; i--) {
+    if (signature(memory[i]!) === sig) {
+      memory[i]!.count += 1;
+      memory[i]!.lastTick = fact.tick;
+      return;
+    }
+  }
+  memory.push({ ...fact, lastTick: fact.tick, count: 1 });
   if (memory.length <= C.MEMORY_CAPACITY) return;
   let evict = 0;
   let evictScore = score(memory[0]!, nowTick);
   for (let i = 1; i < memory.length; i++) {
     const s = score(memory[i]!, nowTick);
-    if (s < evictScore || (s === evictScore && memory[i]!.tick < memory[evict]!.tick)) {
+    if (s < evictScore || (s === evictScore && memory[i]!.lastTick < memory[evict]!.lastTick)) {
       evict = i;
       evictScore = s;
     }
