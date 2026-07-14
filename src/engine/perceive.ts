@@ -73,6 +73,7 @@ export function perceive(world: World, agentId: string): Perception {
     },
     tiles,
     agents,
+    memory: self.memory.map((m) => ({ ...m })), // defensive copy — callers can't mutate world state
   };
 }
 

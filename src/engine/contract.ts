@@ -26,9 +26,13 @@ export type Action =
   | { type: 'REST' };
 
 // The bounded view. Built by perceive(); contains ONLY what this agent may see:
-// its own tile + a radius of PERCEPTION_RADIUS, its own inventory and stats, and
+// its own tile + a radius of PERCEPTION_RADIUS, its own inventory/stats/memory, and
 // nearby agents' positions (+ a `distress` flag) — NEVER their inventory or stats,
 // NEVER global state, NEVER the event log.
+//
+// `memory` is SOCIAL: the agent's own recent events PLUS witnessed acts of others it saw
+// within its radius (observable acts only — who did what, where — never anyone's private
+// state). It is what makes reputation/grudges/trust possible in later phases.
 //
 // FIELD NAMING IS PART OF THE CONTRACT: these names go straight into an LLM prompt in
 // Phase 3. Use satiation/hydration (high = well, 0 = the need is unmet), NOT
@@ -47,7 +51,28 @@ export interface Perception {
   };
   tiles: PerceivedTile[]; // the agent's tile + everything within PERCEPTION_RADIUS
   agents: PerceivedAgent[]; // visible others — positions + distress only
+  memory: MemoryEntry[]; // own + witnessed recent events, oldest→newest, ≤ MEMORY_CAPACITY
 }
+
+// A bounded, salience-ranked record of what this agent did and what it SAW others do (within
+// radius). Every field is observable: item/qty/tile/cause and a public agent id (`who`) — it
+// NEVER carries another agent's inventory, satiation, hydration, energy, or health.
+export type MemoryEntry =
+  // ── the agent's OWN experienced events ('moved' is deliberately not recorded — noise) ──
+  | { tick: number; kind: 'gathered'; item: ItemType; qty: number }
+  | { tick: number; kind: 'ate'; item: ItemType }
+  | { tick: number; kind: 'drank'; item: ItemType }
+  | { tick: number; kind: 'dropped'; item: ItemType; qty: number }
+  | { tick: number; kind: 'rested' }
+  | { tick: number; kind: 'rejected'; action: Action; reason: string }
+  | { tick: number; kind: 'starving' | 'dehydrating' } // the tick one of its needs hit 0
+  // ── SOCIAL: acts the agent OBSERVED within its radius, tagged with the actor's public id ──
+  | { tick: number; kind: 'witnessed_gathered'; who: string; item: ItemType; qty: number; tile: { x: number; y: number }; lastUnit: boolean }
+  | { tick: number; kind: 'witnessed_dropped'; who: string; item: ItemType; qty: number; tile: { x: number; y: number } }
+  | { tick: number; kind: 'witnessed_died'; who: string; cause: 'starvation' | 'dehydration'; tile: { x: number; y: number } }
+  | { tick: number; kind: 'witnessed_distress'; who: string }
+  | { tick: number; kind: 'appeared'; who: string } // a stranger entered view
+  | { tick: number; kind: 'departed'; who: string }; // …or left it
 
 export interface PerceivedTile {
   x: number;

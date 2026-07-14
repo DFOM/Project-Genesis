@@ -1,6 +1,6 @@
 // Engine-internal world state. NOT importable by agents (they get only `Perception`).
 // Every scalar is an integer for cross-machine-safe canonical hashing.
-import type { Action, ItemType } from './contract.js';
+import type { Action, ItemType, MemoryEntry } from './contract.js';
 import type { RngState } from './rng.js';
 
 export type Terrain = 'plain' | 'hill' | 'water' | 'field';
@@ -27,6 +27,11 @@ export interface Agent {
   // How long (ticks) each need has been at 0 — used to pick the death cause. Not perceived.
   starvingTicks: number;
   dehydratingTicks: number;
+  // Bounded social memory (own + witnessed events), salience-ranked; surfaced via perceive().
+  memory: MemoryEntry[];
+  // Ids of agents in view at the end of the previous tick — internal, drives appeared/departed
+  // memory. Sorted, event-sourced like the tick counters; NOT perceived.
+  lastVisible: string[];
 }
 
 export interface ResourceNode {

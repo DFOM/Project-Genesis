@@ -197,6 +197,8 @@ function attempt(config: RunConfig, rngIn: RngState): { world: World | null; rng
       alive: true,
       starvingTicks: 0,
       dehydratingTicks: 0,
+      memory: [],
+      lastVisible: [],
     });
   }
 

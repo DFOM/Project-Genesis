@@ -68,3 +68,9 @@ export const HEALTH_REGEN = 2; // per tick while both needs are > 0
 export const GATHER_QTY = 3; // items pulled per GATHER
 
 export const MAX_GENESIS_ATTEMPTS = 100; // bounded reachability retry — throws on exhaustion
+
+// ── Memory (Phase 2) ─────────────────────────────────────────────────────────
+// Per-agent bounded memory, evicted by salience that DECAYS with age (see engine/memory.ts).
+export const MEMORY_CAPACITY = 20; // entries retained per agent
+export const TIER_WEIGHT = 500; // points per salience tier
+export const DECAY_WEIGHT = 100; // logarithmic age decay: floor(DECAY_WEIGHT * log2(1 + age))

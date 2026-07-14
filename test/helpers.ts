@@ -26,6 +26,8 @@ export function addAgent(w: World, id: string, x: number, y: number, over: Parti
     alive: true,
     starvingTicks: 0,
     dehydratingTicks: 0,
+    memory: [],
+    lastVisible: [],
     ...over,
   };
   w.agents.push(a);
