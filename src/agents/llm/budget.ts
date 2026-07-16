@@ -68,12 +68,27 @@ export interface Estimate {
   model: string;
 }
 
-// Defaults reflect the Phase-3 prompt: a ~600-token system prompt that is stable across ticks
-// (so it is a cache READ after the first call of a run), a compact per-tick perception, and a
-// tiny JSON action out.
-const DEFAULT_FRESH_INPUT = 100;
-const DEFAULT_CACHED_INPUT = 600;
-const DEFAULT_OUTPUT = 80;
+// MEASURED against the real rendered prompt (seed 42, 6 agents, 300 samples over 50 ticks), not
+// guessed:
+//   system prompt      542 tokens  (stable across every call of a run)
+//   per-tick perception mean 147, p50 137, p95 212 tokens
+//   action out         ~40 tokens of JSON
+//
+// NOTHING IS CACHED, AND THAT IS NOT A BUG WE CAN FIX. Opus 4.8's minimum cacheable prefix is
+// 4,096 tokens; our system prompt is 542. Below the minimum the API silently declines to cache —
+// no error, `cache_creation_input_tokens: 0` — so `cache_control` in anthropic.ts is inert and
+// every call pays full input price for all 542 tokens. Padding the prompt to 4,096 tokens to
+// "unlock" caching would mean inventing ~3,500 tokens of filler to read on every call: it barely
+// breaks even and it would corrupt the experiment, since the system prompt IS the treatment.
+//
+// So the defaults below assume ZERO cache reads. An earlier version assumed 600 cached tokens at
+// the $0.50/M cache rate and under-priced the whole project by ~59% ($1,210 vs $1,920 for the
+// success matrix) — an error that would have surfaced as a budget pause halfway through a paid
+// batch rather than as a number on screen beforehand. The estimate is the gate; the gate has to
+// be honest or it is decoration.
+const DEFAULT_FRESH_INPUT = 542 + 147; // system + mean perception, all at full price
+const DEFAULT_CACHED_INPUT = 0;
+const DEFAULT_OUTPUT = 40;
 
 export function estimateRun(i: EstimateInput): Estimate {
   priceOf(i.model); // fail loudly NOW on an unpriced model, not after the batch starts

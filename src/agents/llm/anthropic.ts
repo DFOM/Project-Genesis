@@ -44,9 +44,13 @@ export class AnthropicProvider implements LlmProvider {
     const msg = await this.client.messages.create({
       model: this.model,
       max_tokens: req.maxTokens,
-      // The system prompt is identical on every call of a run (persona + verbs + numeric scale),
-      // so we mark it cacheable: after the first call it is a cache READ, ~10× cheaper. This is
-      // the single biggest cost lever in the loop, which is why prompt.ts is split the way it is.
+      // The system prompt is identical on every call of a run, so it is marked cacheable —
+      // but BE CLEAR THAT THIS CURRENTLY DOES NOTHING. Opus 4.8's minimum cacheable prefix is
+      // 4,096 tokens and our system prompt is ~542, so the API silently declines to cache it:
+      // no error, `cache_creation_input_tokens: 0`, full input price on every call. The marker is
+      // kept because it is free (below the minimum there is no write premium either) and it
+      // becomes live the moment the prompt crosses 4,096 tokens — but budget.ts must NOT price
+      // this loop as if reads were happening. They are not.
       system: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: req.user }],
       // Structured outputs: CONSTRAIN the model to a valid action shape rather than asking it

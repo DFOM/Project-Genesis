@@ -122,16 +122,37 @@ Not yet built — scheduled around Phase 3:
   that stopped at 300 of 1,200 would have reported its consumption as a quarter of the truth.
   Fixed in `diagnostics.ts`. *(found + fixed Phase 3)*
 
+- **The cost model silently assumed prompt caching that never happens.** `budget.ts` priced 600
+  tokens/call at the $0.50/M cache-read rate, and `anthropic.ts` called `cache_control` "the
+  single biggest cost lever". Both false: **Opus 4.8's minimum cacheable prefix is 4,096 tokens**
+  and our system prompt is **542**, so the API silently declines to cache (no error, just
+  `cache_creation_input_tokens: 0`) and every call pays full $5/M input for all 542 tokens. This
+  under-priced the project by **59%** — the success matrix is **$1,920**, not the $1,209 first
+  reported. Caching cannot be "fixed": reaching 4,096 tokens would mean ~3,500 tokens of filler
+  read on every call, and the system prompt IS the treatment. Found by measuring the real prompt
+  while preparing the smoke test, before any money was spent. *(found + fixed Phase 3)*
+- **The research runner threw away every reasoning trace.** `runLlm` defaults to an in-memory
+  store and `runLlmBatch` passed none, so the event log and the `llm_calls` sidecar were dropped
+  when each run ended — `runs.csv` kept only aggregates. On the real matrix that would have
+  discarded 432,000 REASONED traces, i.e. the actual data, while nominally satisfying invariant
+  #7. `npm run sim:smoke` persists `events.jsonl` + `llm.jsonl`; **the research runner still does
+  not** — see Open. *(found Phase 3)*
+
 ### Open / watching
 - **The prompt is unproven against a real model.** Every Phase-3 test uses `MockProvider`, which
   proves the *plumbing* (adjacency, the closed loop, determinism, the meter) and proves nothing
   about whether an actual model can survive on this perception format. That is exactly what the
   live smoke test and success run are for — and if minds don't beat bots, DESIGN §9 says the
   fault is presumed to be `prompt.ts`.
-- **Token estimates are guesses until a real call lands.** The preflight assumes ~700 input
-  (mostly cached) + ~80 output per call. The first live smoke test will produce real usage
-  numbers; if they differ materially, update the defaults in `budget.ts`. The mid-run cap is the
-  backstop for exactly this.
+- **Token estimates are MEASURED but not yet confirmed against a real call.** The preflight now
+  uses the actual rendered prompt (system 542 tok; perception mean 147 / p95 212; out ~40),
+  priced with NO cache reads. `npm run sim:smoke` prints preflight-vs-actual per token class and
+  will settle it. The mid-run cap is the backstop if the measurement is still off.
+- **`npm run research --provider anthropic` still discards event logs and LLM records.** Only
+  `sim:smoke` persists them. Before spending $1,920 on the success matrix, decide: persist all 60
+  runs (~1.2 GB, since each record carries its full prompt), persist REASONED only, or persist a
+  sampled subset. Spending that much and keeping only mortality counts would be the expensive
+  mistake of this phase.
 
 ---
 
