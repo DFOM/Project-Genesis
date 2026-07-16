@@ -182,7 +182,9 @@ Not yet built — scheduled around Phase 3:
   Confirmed empirically, not assumed: `phase-1-1200t` (20 seeds × 1,200 ticks) yields
   **mean 6.30 dead, sd 4.94** — indistinguishable from the 5,000-tick baseline's mean 6.3 /
   sd 4.9. Nothing dies between tick 1,200 and 5,000. This is why the LLM arm runs 1,200 ticks:
-  identical science for ~¼ the spend ($1,210 vs $5,040).
+  identical science for ~¼ the spend (**$1,920 vs $8,001** at measured, uncached pricing — the
+  saving is larger in absolute terms than the $1,210-vs-$5,040 first quoted, because both arms
+  were mispriced by the caching assumption, not just one).
 - **Never compare an arm against a differently-sized arm.** Different exposure ⇒ different
   mortality, so the delta would measure run length rather than the treatment. `--compare` now
   **refuses** when the two dirs' `ticks` differ, and refuses a pre-Phase-3 `runs.csv` that has
