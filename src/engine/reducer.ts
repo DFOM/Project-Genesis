@@ -105,6 +105,8 @@ function applyStateChange(w: World, e: Exclude<Event, { type: 'GENESIS' }>): voi
       return;
     case 'ACTION_REJECTED':
       return; // a rejection changes no world state — but IS remembered (recordMemory)
+    case 'REASONED':
+      return; // thinking changes no world state — the engine owns reality, agents own opinions
     case 'TICK_COMPLETED':
       w.tick = e.tick;
       w.rng = e.rng;
@@ -210,6 +212,14 @@ function recordMemory(w: World, e: Exclude<Event, { type: 'GENESIS' }>): void {
     case 'MOVED':
     case 'REGEN':
       return; // no memory (a move is noise; regen is invisible)
+    case 'REASONED':
+      // Deliberately NO MemoryFact. Memory is a record of things that HAPPENED in the world —
+      // own acts and witnessed acts. An agent's own reasoning is not a perceivable fact, and
+      // feeding it back would quietly change the experiment: memory would fill with the model's
+      // own words instead of evidence, and salience/coalescing (tuned over Phase 2) would be
+      // scoring prose. What the model learns from is the OUTCOME — the rejection right after
+      // this event. Reasoning is recorded for the audit trail, not fed back as perception.
+      return;
     default: {
       const _exhaustive: never = e;
       throw new Error(`unhandled event ${JSON.stringify(_exhaustive)}`);

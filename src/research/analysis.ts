@@ -81,11 +81,38 @@ function csvCell(v: number | string | boolean | null): string {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-export function buildRunsCsv(reports: DiagnosticReport[]): string {
-  const header = ['seed', ...METRIC_KEYS].join(',');
-  const rows = reports.map((r) => {
-    const m = reportToMetrics(r);
-    return [r.seed, ...METRIC_KEYS.map((k) => m[k])].map(csvCell).join(',');
+// One row per RUN. Under bots a run is a seed; under an LLM the same seed diverges every time, so
+// a run is (seed, replicate) — hence the replicate column, and hence `--replicates`.
+//
+// `ticks` is a column because run length is an independent variable, not a detail: a 1,200-tick
+// arm and a 5,000-tick arm have different exposure and therefore different mortality, and a chart
+// that mixes them is measuring the axis instead of the treatment. `--compare` refuses to compare
+// two dirs whose ticks differ, and this column is what a reader checks six months from now.
+//
+// `modelActionFraction` is provenance: 1.0 means every action was the model's. Anything less is a
+// part-model/part-bot run (urgency-gating's reflex fallback) and is NOT eligible for the paired
+// claim against the bot baseline.
+export interface RunRecord {
+  report: DiagnosticReport;
+  replicate: number;
+  provider: string | null;
+  model: string | null;
+  modelActionFraction: number | null;
+  costUSD: number | null;
+}
+
+export function botRunRecord(report: DiagnosticReport): RunRecord {
+  return { report, replicate: 0, provider: 'heuristic', model: 'bot-v1', modelActionFraction: 0, costUSD: 0 };
+}
+
+const RUN_META_COLS = ['seed', 'replicate', 'ticks', 'provider', 'model', 'modelActionFraction', 'costUSD'] as const;
+
+export function buildRunsCsv(records: RunRecord[]): string {
+  const header = [...RUN_META_COLS, ...METRIC_KEYS].join(',');
+  const rows = records.map((rec) => {
+    const m = reportToMetrics(rec.report);
+    const meta = [rec.report.seed, rec.replicate, rec.report.ticks, rec.provider, rec.model, rec.modelActionFraction, rec.costUSD];
+    return [...meta, ...METRIC_KEYS.map((k) => m[k])].map(csvCell).join(',');
   });
   return [header, ...rows].join('\n') + '\n';
 }
@@ -187,11 +214,49 @@ function parseRunsCsv(text: string): Map<MetricKey, number[]> {
   return out;
 }
 
+// Read the `ticks` column. Every row of a run should carry the same value; a set is returned so a
+// mixed dir is itself detectable.
+export function ticksIn(csv: string): number[] {
+  const lines = csv.trim().split('\n');
+  const header = lines[0]!.split(',');
+  const i = header.indexOf('ticks');
+  if (i < 0) return [];
+  return [...new Set(lines.slice(1).map((l) => Number(l.split(',')[i])).filter((n) => Number.isFinite(n)))];
+}
+
+export class TickMismatch extends Error {}
+
+// THE WRONG-BASELINE GUARD. The frozen `phase-1` tag is a 5,000-tick bot baseline. The Phase-3 LLM
+// arm runs 1,200 ticks (all mortality resolves by ~tick 1,000; the rest is equilibrium nobody
+// should pay a model to think through). Comparing the two would be invalid — different exposure
+// produces different mortality, and the delta would be measuring run length, not minds.
+//
+// So the mismatch is made IMPOSSIBLE rather than merely discouraged: compare refuses. The paired
+// comparison is LLM-1200t vs phase-1-1200t, and there is no way to fat-finger it into comparing
+// against the 5,000-tick tag.
+export function assertSameTicks(labelA: string, csvA: string, labelB: string, csvB: string): void {
+  const a = ticksIn(csvA);
+  const b = ticksIn(csvB);
+  if (a.length === 0 || b.length === 0) {
+    throw new TickMismatch(`cannot verify run length: a runs.csv has no 'ticks' column (pre-Phase-3 output?). Regenerate both arms with the current runner before comparing.`);
+  }
+  if (a.length > 1 || b.length > 1) throw new TickMismatch(`a run dir mixes run lengths — ${labelA}: [${a.join(', ')}], ${labelB}: [${b.join(', ')}]`);
+  if (a[0] !== b[0]) {
+    throw new TickMismatch(
+      `REFUSED: '${labelA}' ran ${a[0]} ticks and '${labelB}' ran ${b[0]}.\n` +
+        `Different exposure ⇒ different mortality, so this comparison would measure run length, not the treatment.\n` +
+        `Re-run the shorter arm's baseline at a matching length (e.g. npm run research -- --seeds 1-20 --ticks ${b[0]} --label phase-1-${b[0]}t).`,
+    );
+  }
+}
+
 export function buildCompareMd(labelA: string, csvA: string, labelB: string, csvB: string): string {
+  assertSameTicks(labelA, csvA, labelB, csvB);
   const a = parseRunsCsv(csvA);
   const b = parseRunsCsv(csvB);
   const L: string[] = [];
   L.push(`# Compare: ${labelA} vs ${labelB}`);
+  L.push(`_both arms: ${ticksIn(csvA)[0]} ticks_`);
   L.push('');
   L.push(`| metric | ${labelA} (mean ± sd) | ${labelB} (mean ± sd) | Δ mean |`);
   L.push('|:--|---:|---:|---:|');

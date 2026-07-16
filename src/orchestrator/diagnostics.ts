@@ -2,10 +2,11 @@
 // rate, rejection histogram, and per-death forensics. It runs an OBSERVED copy of the sim
 // loop (its own perceive→propose→step), so it can inspect proposals, events, and world state
 // every tick without touching the pure engine. Used by `sim:diagnose` and `test:scarcity`.
-import { applyEvent, perceive, config as C } from '../engine/index.js';
-import type { Event, ItemType, ProposedAction, World } from '../engine/index.js';
+import { applyEvent, normalizeMindResult, perceive, config as C } from '../engine/index.js';
+import type { Event, ItemType, Mind, Perception, ProposedAction, World } from '../engine/index.js';
 import { step } from '../referee/index.js';
 import { heuristicBot } from '../agents/index.js';
+import type { EventStore } from '../store/index.js';
 import { makeConfig } from './harness.js';
 
 export interface DeathRecord {
@@ -90,10 +91,29 @@ function manhattan(ax: number, ay: number, bx: number, by: number): number {
   return Math.abs(ax - bx) + Math.abs(ay - by);
 }
 
-export function diagnose(seed: number, ticks: number): DiagnosticReport {
-  const genesis: Event = { type: 'GENESIS', config: makeConfig(seed) };
+// Phase 3 — diagnose is now generic over WHO is thinking, so the LLM arm and the bot arm are
+// measured by the SAME instrument. A second metrics path would drift, and then "minds beat bots"
+// would be a comparison between two rulers rather than two populations.
+//
+// Bots pass nothing and get the Phase-1 behaviour exactly (`mindFor` defaults to heuristicBot,
+// and a synchronous mind resolves without ever yielding — so seeds stay byte-identical).
+export interface DiagnoseOptions {
+  agentCount?: number;
+  mindFor?: (agentId: string) => Mind; // default: heuristicBot
+  beforeTick?: (perceptions: readonly Perception[]) => void; // lets a caller set think-gating
+  shouldStop?: () => boolean; // budget pause — checked before each tick
+  store?: EventStore; // when present, events are appended (the LLM arm wants its log + sidecar)
+  runId?: string;
+}
+
+export async function diagnose(seed: number, ticks: number, opts: DiagnoseOptions = {}): Promise<DiagnosticReport> {
+  const config = { ...makeConfig(seed), ...(opts.agentCount !== undefined ? { agentCount: opts.agentCount } : {}) };
+  const genesis: Event = { type: 'GENESIS', config };
   let world: World = applyEvent(null, genesis);
-  const minds = new Map(world.agents.map((a) => [a.id, heuristicBot(a.id)]));
+  const runId = opts.runId ?? `diag-${seed}`;
+  if (opts.store) opts.store.append(runId, 0, [genesis]);
+  const mindFor = opts.mindFor ?? heuristicBot;
+  const minds = new Map(world.agents.map((a) => [a.id, mindFor(a.id)]));
 
   // Fixed node positions (nodes never move); used for death-distance forensics.
   const grainPos = world.nodes.filter((n) => n.item === 'grain').map((n) => ({ x: n.pos.x, y: n.pos.y }));
@@ -159,24 +179,33 @@ export function diagnose(seed: number, ticks: number): DiagnosticReport {
     return best;
   };
 
+  let ticksCompleted = 0;
   for (let t = 0; t < ticks; t++) {
+    // Budget pause (LLM arm only; bots never set this). A paused run is still data: its event log
+    // is a complete, replayable history up to the pause.
+    if (opts.shouldStop?.()) break;
+
     // 1) Collect proposals (mirrors the orchestrator), tracking GATHER proposals per node tile.
     const proposals: ProposedAction[] = [];
     const gatherByTile = new Map<string, number>();
-    for (const a of world.agents) {
-      if (!a.alive) continue;
-      const p = perceive(world, a.id);
+    const living = world.agents.filter((a) => a.alive);
+    const perceptions = living.map((a) => perceive(world, a.id));
+    // Hook for think-gating: the caller sees every living agent's perception and decides who
+    // thinks this tick, before any mind is asked.
+    opts.beforeTick?.(perceptions);
+    for (let i = 0; i < living.length; i++) {
+      const a = living[i]!;
+      const p = perceptions[i]!;
       visibleAgentsSum += p.agents.length;
       perceptionCount++;
-      const proposed = minds.get(a.id)!.propose(p);
-      const actions = Array.isArray(proposed) ? proposed : []; // heuristic bots are synchronous
-      for (const action of actions) {
-        proposals.push({ agentId: a.id, action });
+      const { actions, reasoning } = normalizeMindResult(await Promise.resolve(minds.get(a.id)!.propose(p)));
+      actions.forEach((action, k) => {
+        proposals.push(k === 0 && reasoning !== undefined ? { agentId: a.id, action, reasoning } : { agentId: a.id, action });
         if (action.type === 'GATHER') {
           const key = `${a.pos.x},${a.pos.y}`;
           gatherByTile.set(key, (gatherByTile.get(key) ?? 0) + 1);
         }
-      }
+      });
     }
     // A tick is "contested" if ≥2 agents proposed GATHER while standing on the same node.
     let contestedThisTick = false;
@@ -191,6 +220,8 @@ export function diagnose(seed: number, ticks: number): DiagnosticReport {
     const result = step(world, proposals);
     world = result.world;
     const events = result.events;
+    ticksCompleted++;
+    if (opts.store) opts.store.append(runId, world.tick, events);
 
     // 3) Tally from events.
     const gatheredTiles = new Set<string>();
@@ -331,8 +362,11 @@ export function diagnose(seed: number, ticks: number): DiagnosticReport {
   }
   const zeroFraction = nodeSamples > 0 ? stockHist[0]! / nodeSamples : 0;
 
-  const grainConsumedPerTick = grainConsumed / ticks;
-  const waterConsumedPerTick = waterConsumed / ticks;
+  // Rates divide by the ticks actually RUN, not the ticks requested: a budget-paused LLM run that
+  // stopped at 300 of 1,200 must not report its consumption as a quarter of the truth.
+  const denom = Math.max(1, ticksCompleted);
+  const grainConsumedPerTick = grainConsumed / denom;
+  const waterConsumedPerTick = waterConsumed / denom;
 
   // Finalize per-agent records from the final world.
   for (const a of world.agents) {
@@ -346,13 +380,13 @@ export function diagnose(seed: number, ticks: number): DiagnosticReport {
 
   return {
     seed,
-    ticks,
+    ticks: ticksCompleted,
     alive: world.agents.filter((a) => a.alive).length,
     dead: world.agents.filter((a) => !a.alive).length,
     grainRegenCapacity: grainCount * C.NODE_REGEN_PER_TICK,
     waterRegenCapacity: waterCount * C.NODE_REGEN_PER_TICK,
-    grainRegenDelivered: grainDelivered / ticks,
-    waterRegenDelivered: waterDelivered / ticks,
+    grainRegenDelivered: grainDelivered / denom,
+    waterRegenDelivered: waterDelivered / denom,
     grainConsumedPerTick,
     waterConsumedPerTick,
     grainSupplyDemandRatio: grainConsumedPerTick > 0 ? (grainCount * C.NODE_REGEN_PER_TICK) / grainConsumedPerTick : Infinity,

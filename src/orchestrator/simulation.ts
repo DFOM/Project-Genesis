@@ -2,7 +2,7 @@
 // NOT pure — it may read a clock/timer for pacing (the engine may not). Determinism lives
 // entirely below it: it only chooses WHICH proposals to collect and hands them to the
 // referee, which is where all rules and the seeded rng live.
-import { perceive, serialize } from '../engine/index.js';
+import { normalizeMindResult, perceive, serialize } from '../engine/index.js';
 import type { World, ProposedAction, Event, Mind, RunConfig } from '../engine/index.js';
 import { step } from '../referee/index.js';
 import { applyEvent } from '../engine/index.js';
@@ -48,8 +48,11 @@ export class Simulation {
       if (!a.alive) continue;
       const mind = this.minds.get(a.id);
       if (!mind) continue;
-      const actions = await Promise.resolve(mind.propose(perceive(this.world, a.id)));
-      for (const action of actions) proposals.push({ agentId: a.id, action });
+      const { actions, reasoning } = normalizeMindResult(await Promise.resolve(mind.propose(perceive(this.world, a.id))));
+      // Reasoning attaches to the FIRST proposal only: one thought produced this agent's turn, so
+      // it must be emitted once. The referee guards this too, but keeping the invariant on both
+      // sides means neither has to trust the other.
+      actions.forEach((action, i) => proposals.push(i === 0 && reasoning !== undefined ? { agentId: a.id, action, reasoning } : { agentId: a.id, action }));
     }
     return proposals;
   }

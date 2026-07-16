@@ -1,6 +1,6 @@
 // Engine-internal world state. NOT importable by agents (they get only `Perception`).
 // Every scalar is an integer for cross-machine-safe canonical hashing.
-import type { Action, ItemType, MemoryEntry } from './contract.js';
+import type { ItemType, MemoryEntry, Proposal, Reasoning } from './contract.js';
 import type { RngState } from './rng.js';
 
 export type Terrain = 'plain' | 'hill' | 'water' | 'field';
@@ -61,9 +61,19 @@ export function idx(size: number, x: number, y: number): number {
   return y * size + x;
 }
 
-// A proposed action tagged with its actor. Agents return bare Action[]; the orchestrator
+// A proposed action tagged with its actor. Agents return bare Proposal[]; the orchestrator
 // attaches the agent id before handing proposals to the referee.
 export interface ProposedAction {
   agentId: string;
-  action: Action;
+  action: Proposal;
+  // Phase 3 — the reasoning that produced this proposal, if a mind reasoned at all (bots never
+  // do). It rides WITH the proposal rather than being emitted at collection time because the
+  // referee SHUFFLES proposals: reasoning emitted up-front would pile into a block at the head of
+  // the tick in id order, nowhere near the action it explains. Carried here, the referee can emit
+  // REASONED immediately before this proposal's outcome. Plain data — the engine imports nothing
+  // from agents/, and `decide` stays pure (it only passes this through into an event).
+  //
+  // The orchestrator attaches it to the FIRST proposal from an agent only; the referee emits at
+  // most one REASONED per agent per tick.
+  reasoning?: Reasoning;
 }

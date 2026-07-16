@@ -97,15 +97,39 @@ export function decide(world: World, proposed: readonly ProposedAction[]): Event
 
   // 2) One action per agent per tick; process in shuffle order.
   const acted = new Set<string>();
+  const reasoned = new Set<string>(); // at most one REASONED per agent per tick
   for (const p of shuffled.items) {
     const s = agents.get(p.agentId);
     if (!s || !s.alive) continue; // dead/unknown agents don't act
+
+    // Phase 3 — emit the reasoning that produced this proposal IMMEDIATELY BEFORE its outcome,
+    // whatever that outcome turns out to be: an action event, or a rejection (a rejected proposal
+    // is still the consequence of the thought that produced it). Because we are inside the
+    // shuffled loop, thought and consequence end up adjacent in the log — which is the whole
+    // point; emitting at collection time would bunch every REASONED at the head of the tick.
+    // Bots carry no reasoning, so they add nothing here and the bot log is byte-for-byte what it
+    // was before Phase 3 (test:determinism stays green).
+    if (p.reasoning !== undefined && !reasoned.has(p.agentId)) {
+      reasoned.add(p.agentId);
+      events.push({ type: 'REASONED', agentId: p.agentId, rawResponse: p.reasoning.rawResponse, callRef: p.reasoning.callRef });
+    }
+
     if (acted.has(p.agentId)) {
       reject(p.agentId, p.action, 'one action per tick');
       continue;
     }
     acted.add(p.agentId);
     const act = p.action;
+
+    // The ANTI-VERB. A mind proposed something that is not a valid Action (malformed LLM JSON, an
+    // unknown verb, a refusal, a truncated response). It is judged, not thrown: rejecting it emits
+    // ACTION_REJECTED → coalesced memory → next tick's prompt, so the model sees WHY it failed and
+    // can adapt. `act.reason` is the adapter's stable category (never raw text — the raw response
+    // is in the REASONED event emitted just above).
+    if (act.type === 'INVALID') {
+      reject(p.agentId, act, `invalid proposal: ${act.reason}`);
+      continue;
+    }
 
     switch (act.type) {
       case 'MOVE': {

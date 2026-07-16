@@ -6,6 +6,7 @@ import { diagnose } from '../orchestrator/diagnostics.js';
 if (!parentPort) throw new Error('research/worker must run as a worker thread');
 
 parentPort.on('message', (msg: { seed: number; ticks: number }) => {
-  const report = diagnose(msg.seed, msg.ticks);
-  parentPort!.postMessage({ seed: msg.seed, report });
+  void diagnose(msg.seed, msg.ticks).then((report) => {
+    parentPort!.postMessage({ seed: msg.seed, report });
+  });
 });

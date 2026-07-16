@@ -5,7 +5,7 @@
 import Database from 'better-sqlite3';
 import type { Event, World } from '../engine/index.js';
 import { serialize } from '../engine/index.js';
-import { type EventStore, replayEvents } from './eventStore.js';
+import { type EventStore, type LlmCallRow, replayEvents } from './eventStore.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS runs (
@@ -20,9 +20,31 @@ CREATE TABLE IF NOT EXISTS events (
   payload TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, seq);
+-- The LLM-call sidecar (Phase 3). NOT part of replay: state is derived from the events table
+-- alone, and this table could be dropped without changing a single tick of any run. It exists for
+-- invariant #7 (every LLM call is recorded: prompt, response, model, tokens, cost) and for cost
+-- accounting. The payload column is opaque JSON the store never parses -- so Phase 4 can enrich
+-- the record without a migration. No API key is ever written here (invariant #6).
+CREATE TABLE IF NOT EXISTS llm_calls (
+  seq      INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id   TEXT NOT NULL,
+  call_ref TEXT NOT NULL,
+  tick     INTEGER NOT NULL,
+  agent_id TEXT NOT NULL,
+  payload  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_run ON llm_calls(run_id, seq);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_ref ON llm_calls(run_id, call_ref);
 `;
 
 interface EventRow {
+  payload: string;
+}
+
+interface LlmCallRowRaw {
+  call_ref: string;
+  tick: number;
+  agent_id: string;
   payload: string;
 }
 
@@ -30,6 +52,7 @@ export class SqliteEventStore implements EventStore {
   private readonly db: Database.Database;
   private readonly insertEvent: Database.Statement;
   private readonly insertRun: Database.Statement;
+  private readonly insertLlmCall: Database.Statement;
 
   constructor(filename = ':memory:') {
     this.db = new Database(filename);
@@ -37,6 +60,7 @@ export class SqliteEventStore implements EventStore {
     this.db.exec(SCHEMA);
     this.insertEvent = this.db.prepare('INSERT INTO events (run_id, tick, type, payload) VALUES (?, ?, ?, ?)');
     this.insertRun = this.db.prepare('INSERT OR IGNORE INTO runs (run_id, created_at) VALUES (?, ?)');
+    this.insertLlmCall = this.db.prepare('INSERT INTO llm_calls (run_id, call_ref, tick, agent_id, payload) VALUES (?, ?, ?, ?, ?)');
   }
 
   append(runId: string, tick: number, events: readonly Event[]): void {
@@ -56,6 +80,16 @@ export class SqliteEventStore implements EventStore {
   runExists(runId: string): boolean {
     const row = this.db.prepare('SELECT 1 FROM runs WHERE run_id = ?').get(runId);
     return row !== undefined;
+  }
+
+  appendLlmCall(runId: string, row: LlmCallRow): void {
+    this.insertRun.run(runId, Date.now());
+    this.insertLlmCall.run(runId, row.callRef, row.tick, row.agentId, row.payload);
+  }
+
+  readLlmCalls(runId: string): LlmCallRow[] {
+    const rows = this.db.prepare('SELECT call_ref, tick, agent_id, payload FROM llm_calls WHERE run_id = ? ORDER BY seq').all(runId) as LlmCallRowRaw[];
+    return rows.map((r) => ({ callRef: r.call_ref, tick: r.tick, agentId: r.agent_id, payload: r.payload }));
   }
 
   replay(runId: string): World {

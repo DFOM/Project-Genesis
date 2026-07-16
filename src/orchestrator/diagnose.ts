@@ -13,4 +13,4 @@ function arg(name: string, fallback: number): number {
 
 const seed = arg('seed', 42);
 const ticks = arg('ticks', 5000);
-process.stdout.write(formatReport(diagnose(seed, ticks)) + '\n');
+void diagnose(seed, ticks).then((r) => process.stdout.write(formatReport(r) + '\n'));

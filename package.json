@@ -28,9 +28,9 @@
     "@types/node": "^22.9.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.3.3",
     "@typescript-eslint/eslint-plugin": "^8.15.0",
     "@typescript-eslint/parser": "^8.15.0",
+    "@vitejs/plugin-react": "^4.3.3",
     "dependency-cruiser": "^16.5.0",
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
@@ -43,6 +43,7 @@
     "vitest": "^2.1.5"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
     "better-sqlite3": "^11.5.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
@@ -50,8 +51,14 @@
   "build": {
     "appId": "com.genesis.sandbox",
     "productName": "Genesis",
-    "files": ["out/**/*"],
-    "mac": { "target": "dmg" },
-    "win": { "target": "nsis" }
+    "files": [
+      "out/**/*"
+    ],
+    "mac": {
+      "target": "dmg"
+    },
+    "win": {
+      "target": "nsis"
+    }
   }
 }

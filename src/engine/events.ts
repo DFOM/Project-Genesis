@@ -5,7 +5,7 @@
 // Events carry CONCRETE outcomes (the resulting values), not intentions — the referee's
 // `decide` computes the outcome and bakes it in; `applyEvent` merely writes it. That keeps
 // the rules in one place and makes applyEvent a trivial, deterministic writer.
-import type { Action, ItemType } from './contract.js';
+import type { ItemType, Proposal } from './contract.js';
 import type { RunConfig, Vec } from './types.js';
 import type { RngState } from './rng.js';
 
@@ -36,7 +36,20 @@ export type Event =
   | { type: 'REGEN'; tile: Vec; amount: number }
   | { type: 'METABOLIZED'; deltas: MetabolismDelta[] }
   | { type: 'AGENT_DIED'; agentId: string; cause: DeathCause }
-  | { type: 'ACTION_REJECTED'; agentId: string; action: Action; reason: string }
+  | { type: 'ACTION_REJECTED'; agentId: string; action: Proposal; reason: string }
+  // Phase 3 — the ONLY event that changes no state. It is still a fact that happened, and it is
+  // recorded like any other (invariant #2). An LLM reasoned, and this is verbatim what it said.
+  //
+  // WHY IT LIVES HERE rather than only in the sidecar: the question this whole project exists to
+  // answer — "the currency detector fired at tick 412; WHY did agent-06 accept the useless rock?"
+  // — must be a READ of one totally-ordered stream, not a join. The referee emits this
+  // IMMEDIATELY BEFORE the events that reasoning produced (the action, or its rejection), so
+  // thought and consequence are adjacent forever. A sidecar join keyed by (runId, tick, agentId)
+  // would go fragile the moment urgency-gating or a retry breaks the 1:1 correspondence.
+  //
+  // `rawResponse` is model output — never a key (invariant #6). The heavy data (prompt, tokens,
+  // cost, latency) stays in the sidecar, reachable via `callRef`.
+  | { type: 'REASONED'; agentId: string; rawResponse: string; callRef: string }
   | { type: 'TICK_COMPLETED'; tick: number; rng: RngState };
 
 export type EventType = Event['type'];

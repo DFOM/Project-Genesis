@@ -7,8 +7,8 @@ import { describe, it, expect } from 'vitest';
 import { diagnose } from '../src/orchestrator/diagnostics.js';
 
 describe('scarcity', () => {
-  it('at seed 42, nodes deplete and gathers are contested', () => {
-    const r = diagnose(42, 5000);
+  it('at seed 42, nodes deplete and gathers are contested', async () => {
+    const r = await diagnose(42, 5000);
     // Nodes actually run dry (trough at zero) — measured ≈0.5% of node-ticks; a paradise is 0%.
     expect(r.nodeZeroFraction).toBeGreaterThan(0.002);
     // Agents repeatedly ARRIVE at an emptied node — measured ≈3500; a paradise is 0.
