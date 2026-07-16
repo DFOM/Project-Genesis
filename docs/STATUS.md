@@ -17,8 +17,13 @@ What remains is *spending money*: the live smoke test and the paired success run
 operator's to trigger, deliberately, after reading the preflight estimate.
 
 **The next action is a decision, not a build:** the success-criterion matrix (6 agents ×
-20 seeds × 3 replicates × 1,200 ticks, `every-tick`) is projected at **$1,209.60** and the
-preflight gate refuses it under any smaller cap. Run it with `--budget 1300`, or shrink it.
+20 seeds × 3 replicates × 1,200 ticks, `every-tick`) is projected at **$1,920.24** ($32.00/run
+× 60), and the preflight gate refuses it under any smaller cap.
+
+> **This was reported as $1,209.60 until 2026-07-16.** The estimator assumed prompt caching that
+> Opus 4.8 never performs (see the bugs table). $1,920 is the measured figure; the first
+> `sim:smoke` run will confirm it against real usage. **Do the smoke test first** — it costs
+> ~$1.33 and settles the cost model before the 60-run batch commits to ~$1,900.
 
 ---
 
@@ -60,14 +65,21 @@ preflight gate refuses it under any smaller cap. Run it with `--budget 1300`, or
 ### ⏭️ Next
 
 - **Phase 3 verification — costs real money, operator-triggered.**
-  1. **Live smoke:** `ANTHROPIC_API_KEY` set, 6 agents, 1 seed, low ticks, tiny `--budget`.
-     Confirms real responses parse, the meter is accurate, the gate blocks, the cap pauses.
-  2. **Success run:** `npm run research -- --seeds 1-20 --ticks 1200 --replicates 3 --agents 6
-     --provider anthropic --budget 1300 --label first-minds` (~$1,210), then
+  1. **Live smoke (~$1.33) — do this first.**
+     `export ANTHROPIC_API_KEY=…` then
+     `npm run sim:smoke -- --seed 42 --agents 6 --ticks 50 --budget 3`
+     Confirms real responses parse, the gate blocks, the cap pauses, and — the point —
+     prints **preflight vs ACTUAL per token class**, settling the cost model by evidence
+     before the batch. Persists `events.jsonl` + `llm.jsonl`.
+     Then read a mind: `npm run sim:reasoning -- --dir research/smoke-…`
+  2. **Success run (~$1,920):** `npm run research -- --seeds 1-20 --ticks 1200 --replicates 3
+     --agents 6 --provider anthropic --budget 2000 --label first-minds`, then
      `--compare research/phase-1-1200t-… research/first-minds-…`.
      **Success = mortality beats `phase-1-1200t` by more than the seed-to-seed sd (4.94).**
      If it doesn't, the perception format is wrong — fix `src/agents/llm/prompt.ts`, not later
      phases (DESIGN §9).
+     ⚠ **Decide the persistence question first** (see Open/watching): as written, this run keeps
+     mortality counts and discards all 432,000 reasoning traces.
 
 ### 🔮 Later (from DESIGN §9)
 
