@@ -30,8 +30,10 @@ import { cpus } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { execSync } from 'node:child_process';
 import * as engineConfig from '../engine/config.js';
-import { AnthropicProvider, assertAffordable, envKeyProvider, estimateRun, formatEstimate, MockProvider, type LlmProvider } from '../agents/llm/index.js';
+import { AnthropicProvider, assertAffordable, envKeyProvider, estimateRun, formatEstimate, MockProvider, type LlmCallRecord, type LlmProvider } from '../agents/llm/index.js';
 import { runLlm } from '../orchestrator/llmHeadless.js';
+import { writeRunArtifacts } from '../orchestrator/persist.js';
+import { InMemoryEventStore } from '../store/index.js';
 import type { DiagnosticReport } from '../orchestrator/diagnostics.js';
 import { botRunRecord, buildRunsCsv, buildAgentsCsv, buildEventsJsonl, buildSummaryMd, buildCompareMd, type RunMeta, type RunRecord } from './analysis.js';
 
@@ -113,23 +115,56 @@ function makeProvider(providerName: string, model: string): LlmProvider {
   }
 }
 
-async function runLlmBatch(seeds: number[], ticks: number, replicates: number, provider: LlmProvider, budget: number, thinkPolicy: 'every-tick' | 'urgency-gated', topK: number | undefined, agentCount: number): Promise<RunRecord[]> {
+// Every LLM run persists its own event log + call records, one directory per run.
+//
+// This used to be the phase's most expensive latent mistake: `runLlm` defaults to an in-memory
+// store and nothing here passed one, so each run's log — every REASONED trace the model produced —
+// was garbage-collected the moment the run returned, and only the mortality counts in runs.csv
+// survived. On the 60-run matrix that is 432,000 paid reasoning traces discarded to keep a number
+// you could have got from bots. Aggregates are a summary OF the experiment; the traces ARE it.
+//
+// Prompts are stored as content hashes (see persist.ts) — recomputable from the log we already
+// keep, and `npm run sim:prompt --verify` proves the recomputation is faithful. Responses and
+// token usage are stored in full: those are the model's, not ours to regenerate.
+async function runLlmBatch(
+  seeds: number[],
+  ticks: number,
+  replicates: number,
+  provider: LlmProvider,
+  budget: number,
+  thinkPolicy: 'every-tick' | 'urgency-gated',
+  topK: number | undefined,
+  agentCount: number,
+  outDir: string,
+): Promise<RunRecord[]> {
   const out: RunRecord[] = [];
   let done = 0;
+  let bytes = 0;
   const total = seeds.length * replicates;
   for (const seed of seeds) {
     for (let rep = 0; rep < replicates; rep++) {
-      const r = await runLlm({ seed, ticks, agentCount, provider, budgetCapUSD: budget, thinkPolicy, topK, runId: `${provider.name}-${seed}-r${rep}` });
+      const runId = `${provider.name}-${seed}-r${rep}`;
+      const store = new InMemoryEventStore();
+      const r = await runLlm({ seed, ticks, agentCount, provider, budgetCapUSD: budget, thinkPolicy, topK, store, runId });
+
+      // Persist BEFORE anything else can go wrong. A crash after this point costs a summary row;
+      // a crash before it costs the run's entire paid output.
+      const calls = store.readLlmCalls(runId).map((row) => JSON.parse(row.payload) as LlmCallRecord);
+      const art = writeRunArtifacts(join(outDir, 'runs', runId), store.read(runId), calls);
+      bytes += art.bytes;
+
       out.push({ report: r.report, replicate: rep, provider: r.provider, model: r.model, modelActionFraction: r.modelActionFraction, costUSD: r.costUSD });
       process.stderr.write(
-        `  seed ${seed} rep ${rep} done (${++done}/${total}) — $${r.costUSD.toFixed(2)} spent, ${r.llmCalls} calls, model-authored ${(r.modelActionFraction * 100).toFixed(0)}%${r.budgetPaused ? ' [BUDGET PAUSED]' : ''}\n`,
+        `  seed ${seed} rep ${rep} done (${++done}/${total}) — $${r.costUSD.toFixed(2)} spent, ${r.llmCalls} calls, model-authored ${(r.modelActionFraction * 100).toFixed(0)}% · kept ${art.reasoned} traces (${(art.bytes / 1e6).toFixed(1)} MB)${r.budgetPaused ? ' [BUDGET PAUSED]' : ''}\n`,
       );
       if (r.budgetPaused) {
         process.stderr.write(`\nBUDGET CAP HIT ($${budget.toFixed(2)}). Stopping the batch — ${total - done} runs not started.\n`);
+        process.stderr.write(`Everything already paid for is on disk in ${join(outDir, 'runs')}.\n`);
         return out;
       }
     }
   }
+  process.stderr.write(`\nkept ${(bytes / 1e6).toFixed(1)} MB of event logs + call records across ${done} runs\n`);
   return out;
 }
 
@@ -199,8 +234,9 @@ async function runExperiment(): Promise<void> {
     }
 
     const provider = makeProvider(providerName, model);
+    mkdirSync(outDir, { recursive: true }); // needed now: runs persist as they go, not at the end
     process.stderr.write(`research: ${seeds.length} seeds × ${replicates} replicates × ${ticks} ticks × ${agents} agents (${providerName}/${model}) → ${outDir}\n`);
-    records = await runLlmBatch(seeds, ticks, replicates, provider, budget, thinkPolicy, topK, agents);
+    records = await runLlmBatch(seeds, ticks, replicates, provider, budget, thinkPolicy, topK, agents, outDir);
   }
 
   const ms = Date.now() - start;
@@ -220,7 +256,12 @@ async function runExperiment(): Promise<void> {
   );
 
   process.stdout.write(`\ndone in ${(ms / 1000).toFixed(1)}s → ${outDir}\n  summary.md · runs.csv · agents.csv · events/*.jsonl · config.json\n`);
-  if (isLlm) process.stdout.write(`  actual spend: $${totalCost.toFixed(2)}\n`);
+  if (isLlm) {
+    process.stdout.write(`  actual spend: $${totalCost.toFixed(2)}\n`);
+    process.stdout.write(`  runs/<runId>/  events.jsonl (incl. every REASONED) · llm.jsonl · system-prompt.txt\n`);
+    process.stdout.write(`\nRead a mind:      npm run sim:reasoning -- --dir ${join(outDir, 'runs', `${providerName}-${seeds[0]}-r0`)}\n`);
+    process.stdout.write(`Rebuild a prompt: npm run sim:prompt -- --dir ${join(outDir, 'runs', `${providerName}-${seeds[0]}-r0`)} --verify\n`);
+  }
 }
 
 function runCompare(dirA: string, dirB: string): void {

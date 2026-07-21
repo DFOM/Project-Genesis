@@ -7,19 +7,20 @@
 //   • is the cost model right? (it prints preflight vs ACTUAL, per token class)
 //   • what did it actually think? (the REASONED log is written to disk, verbatim)
 //
-// WHY THIS EXISTS SEPARATELY FROM `npm run research`: the research runner keeps aggregates —
-// runs.csv, summary.md — and drops the event log when the run ends. That is fine for charting
-// mortality across 60 runs; it is useless for reading a mind. This command persists the full
-// event log AND the LLM-call sidecar as JSONL, because on the first live run the transcript IS
-// the result.
+// WHY THIS EXISTS SEPARATELY FROM `npm run research`: not persistence — the runner now keeps
+// per-run event logs and call records too, via the same writer (persist.ts). This is the
+// SINGLE-RUN, first-contact command: it prints preflight-vs-actual per token class, the schema
+// obedience rate, and the cache verdict — the diagnostics you want once, cheaply, before
+// committing to a 60-run batch. The runner is for the batch; this is for the first call.
 //
 // It spends real money. It refuses to start over budget (--confirm-cost to override), and the
 // mid-run cap remains the backstop.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AnthropicProvider, assertAffordable, envKeyProvider, estimateRun, formatEstimate, type LlmCallRecord } from '../agents/llm/index.js';
 import { InMemoryEventStore } from '../store/index.js';
 import { runLlm } from './llmHeadless.js';
+import { writeRunArtifacts } from './persist.js';
 
 function argVal(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -55,12 +56,12 @@ async function main(): Promise<void> {
   const wallMs = Date.now() - started;
 
   // ── persist everything: the transcript IS the result ───────────────────────
+  // Same writer the research runner uses, so a $1.33 test and a $1,920 batch leave identical
+  // artifact shapes and the same readers work on both.
   const outDir = join('research', `smoke-${new Date().toISOString().replace(/[:.]/g, '-')}`);
-  mkdirSync(outDir, { recursive: true });
   const events = store.read(runId);
   const calls = store.readLlmCalls(runId).map((row) => JSON.parse(row.payload) as LlmCallRecord);
-  writeFileSync(join(outDir, 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n');
-  writeFileSync(join(outDir, 'llm.jsonl'), calls.map((c) => JSON.stringify(c)).join('\n') + '\n');
+  const art = writeRunArtifacts(outDir, events, calls);
 
   // ── preflight vs ACTUAL, per token class — this is what corrects the model ──
   const sum = (f: (c: LlmCallRecord) => number): number => calls.reduce((a, c) => a + f(c), 0);
@@ -107,11 +108,14 @@ async function main(): Promise<void> {
   const rejected = events.filter((e) => e.type === 'ACTION_REJECTED');
   L.push(`REJECTIONS: ${rejected.length} (the referee biting — expected and healthy)`);
   L.push('');
-  L.push(`WROTE → ${outDir}`);
-  L.push(`  events.jsonl  ${events.length} events (incl. ${events.filter((e) => e.type === 'REASONED').length} REASONED — what it thought, verbatim)`);
-  L.push(`  llm.jsonl     ${calls.length} call records (prompt, usage, cost)`);
+  L.push(`WROTE → ${outDir}   (${(art.bytes / 1e6).toFixed(2)} MB)`);
+  L.push(`  events.jsonl       ${art.events} events, incl. ${art.reasoned} REASONED — what it thought, verbatim`);
+  L.push(`  llm.jsonl          ${art.calls} call records — response + usage in full, prompt as a hash`);
+  L.push(`  system-prompt.txt  the system half, stored once instead of ${art.calls} times`);
+  L.push(`  (${(art.promptBytesElided / 1e6).toFixed(2)} MB of prompt text elided — recomputable from the log, hash-verified)`);
   L.push('');
-  L.push(`Read a mind:  npm run sim:reasoning -- --dir ${outDir}`);
+  L.push(`Read a mind:      npm run sim:reasoning -- --dir ${outDir}`);
+  L.push(`Rebuild a prompt: npm run sim:prompt -- --dir ${outDir} --verify`);
   process.stdout.write(L.join('\n') + '\n');
 
   writeFileSync(

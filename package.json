@@ -20,6 +20,7 @@
     "sim:diagnose": "tsx src/orchestrator/diagnose.ts",
     "sim:smoke": "tsx src/orchestrator/smoke.ts",
     "sim:reasoning": "tsx src/orchestrator/reasoning.ts",
+    "sim:prompt": "tsx src/orchestrator/promptDeref.ts",
     "research": "tsx src/research/runner.ts",
     "sim:research": "tsx src/orchestrator/research.ts"
   },

@@ -78,8 +78,10 @@ operator's to trigger, deliberately, after reading the preflight estimate.
      **Success = mortality beats `phase-1-1200t` by more than the seed-to-seed sd (4.94).**
      If it doesn't, the perception format is wrong — fix `src/agents/llm/prompt.ts`, not later
      phases (DESIGN §9).
-     ⚠ **Decide the persistence question first** (see Open/watching): as written, this run keeps
-     mortality counts and discards all 432,000 reasoning traces.
+     Every run now persists `runs/<runId>/{events.jsonl, llm.jsonl, system-prompt.txt}` —
+     ~130 MB for the matrix, not 1.2 GB, because prompts are stored as content hashes that
+     dereference back through the event log (see below). Nothing is sampled; nothing is dropped.
+     Read them with `sim:reasoning` (what it thought) and `sim:prompt` (what it was asked).
 
 ### 🔮 Later (from DESIGN §9)
 
@@ -147,8 +149,11 @@ Not yet built — scheduled around Phase 3:
   store and `runLlmBatch` passed none, so the event log and the `llm_calls` sidecar were dropped
   when each run ended — `runs.csv` kept only aggregates. On the real matrix that would have
   discarded 432,000 REASONED traces, i.e. the actual data, while nominally satisfying invariant
-  #7. `npm run sim:smoke` persists `events.jsonl` + `llm.jsonl`; **the research runner still does
-  not** — see Open. *(found Phase 3)*
+  #7. **Fixed:** every LLM run now writes `runs/<runId>/{events.jsonl, llm.jsonl,
+  system-prompt.txt}` via one shared writer (`src/orchestrator/persist.ts`) used by both the
+  runner and `sim:smoke`, so a $1.33 test and a $1,920 batch leave identical artifacts. Persisted
+  as each run finishes, not at the end — a crash then costs a summary row, not the run's paid
+  output. *(found + fixed Phase 3; **verification pending**, see Open)*
 
 ### Open / watching
 - **The prompt is unproven against a real model.** Every Phase-3 test uses `MockProvider`, which
@@ -160,16 +165,29 @@ Not yet built — scheduled around Phase 3:
   uses the actual rendered prompt (system 542 tok; perception mean 147 / p95 212; out ~40),
   priced with NO cache reads. `npm run sim:smoke` prints preflight-vs-actual per token class and
   will settle it. The mid-run cap is the backstop if the measurement is still off.
-- **`npm run research --provider anthropic` still discards event logs and LLM records.** Only
-  `sim:smoke` persists them. Before spending $1,920 on the success matrix, decide: persist all 60
-  runs (~1.2 GB, since each record carries its full prompt), persist REASONED only, or persist a
-  sampled subset. Spending that much and keeping only mortality counts would be the expensive
-  mistake of this phase.
+- **⚠ The persistence work is written but NOT YET VERIFIED.** `persist.ts`, `promptDeref.ts`, the
+  runner wiring and `test/persist.test.ts` all typecheck, but the round-trip test has not been
+  executed (the tooling was unavailable at the end of the session). **Run `npx vitest run
+  test/persist.test.ts` before trusting any of it, and before any paid batch.** If it goes red,
+  the hash strategy is invalid → switch the runner to persist-all (~1.2 GB); 1.2 GB is trivial
+  against $1,920 and unrecoverable data is not.
 
 ---
 
 ## Known sharp edges (not bugs — things to remember)
 
+- **A stored prompt is a HASH, and rebuilding it depends on the code that rendered it.**
+  `llm.jsonl` keeps each prompt as `sha256:…` rather than 2.7 KB of text, because the prompt is a
+  deterministic function of data we already keep:
+  `prompt(t, agent) = system + renderPerception(perceive(replay(events, t), agent))`.
+  Replaying `events.jsonl` to tick *t* reconstructs the world exactly — memory included, since
+  memory is event-sourced through the same reducer. `npm run sim:prompt -- --dir … --verify`
+  rebuilds every prompt and checks the hash, so recovery is *proven*, not assumed.
+  **The caveat:** change `prompt.ts` or `perceive.ts` and old runs' hashes stop matching. That is
+  deliberate — a mismatch means "this reconstruction is no longer faithful", which beats being
+  handed a plausible forgery. To read an old run's prompts, check out its git SHA (in
+  `config.json`). Responses and token usage are stored **in full** — those are the model's, not
+  ours to regenerate.
 - **better-sqlite3 needs two ABI builds** — Node ABI for tests, Electron ABI for the app.
   Rebuilding one can break the other. Tests use an in-memory store, so the test path never
   needs the native build.
