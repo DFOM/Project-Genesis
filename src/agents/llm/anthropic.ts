@@ -28,6 +28,27 @@ function mapStopReason(r: string | null): StopReason {
   }
 }
 
+// The exact params sent to Anthropic — extracted as a PURE function so a test can prove what
+// crosses the wire without a live call. NOTE: there is deliberately NO `output_config` /
+// structured-output schema. The Action union is a `oneOf`, which Anthropic rejects; and dropping
+// it keeps this seam text-in/text-out (see provider.ts ACTION_SCHEMA). The prompt specifies the
+// shape and parse.ts + INVALID enforce it. If you re-add a schema here, test/llm.test.ts fails.
+export function anthropicRequestParams(req: LlmRequest, model: string): Anthropic.MessageCreateParamsNonStreaming {
+  return {
+    model,
+    max_tokens: req.maxTokens,
+    // The system prompt is identical on every call of a run, so it is marked cacheable — but this
+    // currently does NOTHING: Opus 4.8's minimum cacheable prefix is 4,096 tokens and our system
+    // prompt is ~542, so the API silently declines to cache it (cache_creation_input_tokens: 0,
+    // full input price every call). The marker is free and becomes live if the prompt grows past
+    // 4,096 tokens; budget.ts must NOT price this loop as if reads were happening.
+    system: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }],
+    messages: [{ role: 'user', content: req.user }],
+    // `thinking` is omitted: on Opus 4.8 that means no extended thinking — the cheapest per-tick
+    // posture. The model still reasons inside its response, which is what REASONED records.
+  };
+}
+
 export class AnthropicProvider implements LlmProvider {
   readonly name = 'anthropic';
   readonly model: string;
@@ -41,27 +62,7 @@ export class AnthropicProvider implements LlmProvider {
   }
 
   async complete(req: LlmRequest): Promise<LlmResponse> {
-    const msg = await this.client.messages.create({
-      model: this.model,
-      max_tokens: req.maxTokens,
-      // The system prompt is identical on every call of a run, so it is marked cacheable —
-      // but BE CLEAR THAT THIS CURRENTLY DOES NOTHING. Opus 4.8's minimum cacheable prefix is
-      // 4,096 tokens and our system prompt is ~542, so the API silently declines to cache it:
-      // no error, `cache_creation_input_tokens: 0`, full input price on every call. The marker is
-      // kept because it is free (below the minimum there is no write premium either) and it
-      // becomes live the moment the prompt crosses 4,096 tokens — but budget.ts must NOT price
-      // this loop as if reads were happening. They are not.
-      system: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }],
-      messages: [{ role: 'user', content: req.user }],
-      // Structured outputs: CONSTRAIN the model to a valid action shape rather than asking it
-      // nicely. Makes malformed output the exception instead of routine. It is not a substitute
-      // for the INVALID anti-verb — a refusal or a truncation still lands here as junk.
-      //
-      // NOTE: thinking is deliberately omitted. On Opus 4.8 an absent `thinking` field means the
-      // model runs without extended thinking — the cheapest per-tick posture. The model still
-      // reasons inside its response, which is what REASONED records.
-      output_config: { format: { type: 'json_schema', schema: req.schema as { [k: string]: unknown } } },
-    });
+    const msg = await this.client.messages.create(anthropicRequestParams(req, this.model));
 
     const text = msg.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')

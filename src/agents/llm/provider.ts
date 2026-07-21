@@ -29,9 +29,8 @@ export interface LlmRequest {
   system: string; // stable across ticks → cached
   user: string; // this tick's perception
   maxTokens: number;
-  // The JSON Schema the response must conform to (the Action union). Providers that support
-  // structured outputs enforce it; those that don't ignore it and rely on parse.ts + INVALID.
-  schema: unknown;
+  // NB: no `schema` field. The seam is text-in/text-out — see ACTION_SCHEMA below for why we do
+  // NOT send a response schema to any provider.
 }
 
 export interface LlmResponse {
@@ -47,21 +46,26 @@ export interface LlmProvider {
   complete(req: LlmRequest): Promise<LlmResponse>;
 }
 
-// ── The Action JSON Schema ───────────────────────────────────────────────────
-// Handed to the provider as `output_config.format` so the model is CONSTRAINED to emit a valid
-// action shape rather than asked nicely to. This is the difference between malformed output
-// being routine and being an edge case. parse.ts + the INVALID anti-verb remain the safety net
-// (a refusal or a max_tokens truncation still yields unparseable text).
+// ── The Action JSON Schema — a REFERENCE spec, never sent to a provider ──────────
+// This is the canonical machine-readable shape of the Action union, kept in lockstep with
+// engine/contract.ts (test/llm.test.ts asserts it). It is NOT sent to any provider as a
+// structured-output constraint. Two reasons:
 //
-// It must stay in lockstep with the `Action` union in engine/contract.ts. `actionSchemaMatches`
-// in the test suite is what enforces that; if you add a verb, both change together.
+//   1. It is a `oneOf` (a discriminated union), and Anthropic's structured-output feature rejects
+//      `oneOf` outright ("Schema type 'oneOf' is not supported"). Every provider's structured-
+//      output dialect differs (OpenAI strict mode, Google, Ollama…); depending on one here would
+//      bake a per-provider divergence into a seam whose whole job is to hide provider differences.
+//   2. Even a oneOf-free flat rewrite couldn't enforce the union's real constraints (MOVE needs a
+//      dir, EAT needs an item) — parse.ts would have to validate them post-hoc anyway. Structured
+//      outputs would then be pure coupling with no guarantee left to give.
+//
+// So the SHAPE is specified in the prompt (prompt.ts, hand-written per verb) and enforced by
+// parse.ts, which routes anything malformed to the INVALID anti-verb → ACTION_REJECTED → memory.
+// A model that emits junk experiences the rejection and learns — the honest agent-in-a-world loop.
 //
 // DELIBERATE: EAT/DRINK accept ANY item, not just the edible/drinkable one. The schema constrains
 // SHAPE, never RULES. The referee's rules ("only grain is edible", "item not in inventory") must
-// stay reachable — an agent has to be able to try eating ore, get rejected, and learn. Encoding
-// world rules in the schema would make them unbreakable, which sounds like a feature and is
-// actually the experiment quietly answering its own question: we would no longer be measuring
-// whether a model can learn the physics, only whether our JSON Schema can state them.
+// stay reachable — an agent has to be able to try eating ore, get rejected, and learn.
 const ITEMS: ItemType[] = ['ore', 'water', 'grain'];
 
 export const ACTION_SCHEMA: unknown = {

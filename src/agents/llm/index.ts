@@ -1,6 +1,6 @@
 // Public surface of the LLM runtime. The orchestrator imports from here; nothing outside
 // src/agents/ reaches into the individual modules.
-export { AnthropicProvider, DEFAULT_MODEL } from './anthropic.js';
+export { AnthropicProvider, DEFAULT_MODEL, anthropicRequestParams } from './anthropic.js';
 export { assertAffordable, BudgetRefused, CostMeter, estimateRun, formatEstimate, type Estimate, type EstimateInput } from './budget.js';
 export { envKeyProvider, literalKeyProvider, MissingKey, type KeyProvider } from './keychain.js';
 export { llmMind, type LlmMindOptions } from './llmMind.js';

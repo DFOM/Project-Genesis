@@ -13,7 +13,7 @@ import type { Mind, MindResult, Perception, Proposal } from '../../engine/contra
 import type { CostMeter } from './budget.js';
 import { parseProposal } from './parse.js';
 import { buildSystemPrompt, renderPerception, type PersonaMode } from './prompt.js';
-import { ACTION_SCHEMA, type LlmProvider } from './provider.js';
+import { type LlmProvider } from './provider.js';
 import { makeCallRef, type RecordSink } from './record.js';
 import { reflex } from './urgency.js';
 
@@ -56,7 +56,7 @@ export function llmMind(id: string, opts: LlmMindOptions): Mind {
       const callRef = makeCallRef(p.tick, id, callIndex++);
       const started = Date.now(); // orchestrator-side timing only — never enters engine state
 
-      const res = await opts.provider.complete({ system, user, maxTokens: MAX_TOKENS, schema: ACTION_SCHEMA });
+      const res = await opts.provider.complete({ system, user, maxTokens: MAX_TOKENS });
       const proposal: Proposal = parseProposal(res.text, res.stopReason);
       const cost = opts.meter.add(res.model, res.usage);
 
