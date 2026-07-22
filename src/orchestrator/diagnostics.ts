@@ -104,6 +104,10 @@ export interface DiagnoseOptions {
   shouldStop?: () => boolean; // budget pause — checked before each tick
   store?: EventStore; // when present, events are appended (the LLM arm wants its log + sidecar)
   runId?: string;
+  // Fires with EXACTLY the same event batches that go to the store, in order: once for GENESIS,
+  // once per completed tick. This is the hook incremental persistence uses (RunWriter) so a run
+  // that stops early still has a complete log on disk up to the last finished tick.
+  onEvents?: (events: readonly Event[]) => void;
 }
 
 export async function diagnose(seed: number, ticks: number, opts: DiagnoseOptions = {}): Promise<DiagnosticReport> {
@@ -112,6 +116,7 @@ export async function diagnose(seed: number, ticks: number, opts: DiagnoseOption
   let world: World = applyEvent(null, genesis);
   const runId = opts.runId ?? `diag-${seed}`;
   if (opts.store) opts.store.append(runId, 0, [genesis]);
+  opts.onEvents?.([genesis]); // persist GENESIS first — replay needs it to reconstruct anything
   const mindFor = opts.mindFor ?? heuristicBot;
   const minds = new Map(world.agents.map((a) => [a.id, mindFor(a.id)]));
 
@@ -222,6 +227,7 @@ export async function diagnose(seed: number, ticks: number, opts: DiagnoseOption
     const events = result.events;
     ticksCompleted++;
     if (opts.store) opts.store.append(runId, world.tick, events);
+    opts.onEvents?.(events); // durable before the next tick begins — early stop leaves a complete log
 
     // 3) Tally from events.
     const gatheredTiles = new Set<string>();

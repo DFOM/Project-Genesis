@@ -34,7 +34,7 @@
 // SHA. To read a prompt from an old run, check out its SHA. The mismatch is a feature — it is the
 // system telling you the truth instead of handing you a plausible-looking lie.
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Event } from '../engine/index.js';
 import type { LlmCallRecord } from '../agents/llm/index.js';
@@ -99,34 +99,85 @@ export interface RunArtifacts {
   promptBytesElided: number; // what the hash saved — reported, so the trade is visible
 }
 
-// Write one run's artifacts. `dir` is the run's own directory.
+// ── RunWriter — INCREMENTAL, append-as-you-go persistence ─────────────────────
+//
+// The whole point: a run that stops early — budget cap, Ctrl-C, an unexpected throw — must still
+// leave a COMPLETE, readable log of everything that finished. Buffering the run in memory and
+// writing once at the end fails exactly when it matters: the expensive, half-finished paid run is
+// the one whose data you most need, and it is the one a crash-before-write would lose.
+//
+// So every completed tick's events are appended to events.jsonl the instant the tick closes, and
+// every call record is appended to llm.jsonl the instant the call returns — via appendFileSync,
+// which reaches the OS per write. Prior ticks are durable before the next one begins. `sim:reasoning`
+// and `sim:prompt` read these files as they grow, so a killed run is still fully analysable.
+export class RunWriter {
+  readonly dir: string;
+  private readonly eventsPath: string;
+  private readonly llmPath: string;
+  private systemBytes = 0;
+  private systemWritten = false;
+  private _events = 0;
+  private _reasoned = 0;
+  private _calls = 0;
+  private _bytes = 0;
+  private _promptBytes = 0;
+
+  constructor(dir: string) {
+    mkdirSync(dir, { recursive: true });
+    this.dir = dir;
+    this.eventsPath = join(dir, 'events.jsonl');
+    this.llmPath = join(dir, 'llm.jsonl');
+    // Start clean, so a re-run at the same path can't graft new lines onto a stale prefix.
+    writeFileSync(this.eventsPath, '');
+    writeFileSync(this.llmPath, '');
+  }
+
+  // Append one batch of engine events (GENESIS, or one tick's events). Called in log order.
+  appendEvents(events: readonly Event[]): void {
+    if (events.length === 0) return;
+    const text = events.map((e) => JSON.stringify(e)).join('\n') + '\n';
+    appendFileSync(this.eventsPath, text);
+    this._events += events.length;
+    this._reasoned += events.filter((e) => e.type === 'REASONED').length;
+    this._bytes += Buffer.byteLength(text, 'utf8');
+  }
+
+  // Append one LLM call record. The system prompt is written once, on the first call.
+  appendCall(r: LlmCallRecord): void {
+    if (!this.systemWritten) {
+      const system = splitPrompt(r.prompt).system;
+      writeFileSync(join(this.dir, 'system-prompt.txt'), system + '\n');
+      this.systemBytes = Buffer.byteLength(system, 'utf8');
+      this.systemWritten = true;
+    }
+    const persisted = toPersisted(r);
+    const text = JSON.stringify(persisted) + '\n';
+    appendFileSync(this.llmPath, text);
+    this._calls++;
+    this._bytes += Buffer.byteLength(text, 'utf8');
+    this._promptBytes += persisted.promptBytes;
+  }
+
+  summary(): RunArtifacts {
+    return {
+      eventsPath: this.eventsPath,
+      llmPath: this.llmPath,
+      events: this._events,
+      reasoned: this._reasoned,
+      calls: this._calls,
+      bytes: this._bytes + this.systemBytes,
+      // Prompt text elided by the hash: every prompt's bytes, less the system half we keep once.
+      promptBytesElided: this._promptBytes - this.systemBytes,
+    };
+  }
+}
+
+// Write a whole run at once — a thin wrapper over RunWriter, kept for callers (and tests) that
+// already have the full log in memory. One implementation, so batched and incremental writes are
+// guaranteed byte-identical.
 export function writeRunArtifacts(dir: string, events: readonly Event[], calls: readonly LlmCallRecord[]): RunArtifacts {
-  mkdirSync(dir, { recursive: true });
-  const eventsPath = join(dir, 'events.jsonl');
-  const llmPath = join(dir, 'llm.jsonl');
-
-  const eventsText = events.map((e) => JSON.stringify(e)).join('\n') + '\n';
-  writeFileSync(eventsPath, eventsText);
-
-  const persisted = calls.map(toPersisted);
-  const llmText = persisted.map((c) => JSON.stringify(c)).join('\n') + '\n';
-  writeFileSync(llmPath, llmText);
-
-  // The system prompt is identical on every call of a run — store it once, not 7,200 times.
-  // It is the other half of every reconstruction.
-  if (calls.length > 0) writeFileSync(join(dir, 'system-prompt.txt'), splitPrompt(calls[0]!.prompt).system + '\n');
-
-  // What the hash actually saved: every prompt's bytes, less the system half we DO keep (once).
-  // Subtracting a whole first prompt here would quietly understate it — the file on disk holds
-  // only the system half, not the tick-0 perception.
-  const systemBytes = calls.length > 0 ? Buffer.byteLength(splitPrompt(calls[0]!.prompt).system, 'utf8') : 0;
-  return {
-    eventsPath,
-    llmPath,
-    events: events.length,
-    reasoned: events.filter((e) => e.type === 'REASONED').length,
-    calls: calls.length,
-    bytes: Buffer.byteLength(eventsText, 'utf8') + Buffer.byteLength(llmText, 'utf8') + systemBytes,
-    promptBytesElided: persisted.reduce((a, c) => a + c.promptBytes, 0) - systemBytes,
-  };
+  const w = new RunWriter(dir);
+  w.appendEvents(events);
+  for (const c of calls) w.appendCall(c);
+  return w.summary();
 }

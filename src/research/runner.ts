@@ -30,10 +30,8 @@ import { cpus } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { execSync } from 'node:child_process';
 import * as engineConfig from '../engine/config.js';
-import { AnthropicProvider, assertAffordable, envKeyProvider, estimateRun, formatEstimate, MockProvider, type LlmCallRecord, type LlmProvider } from '../agents/llm/index.js';
+import { AnthropicProvider, OpenAIProvider, assertAffordable, envKeyProvider, estimateRun, formatEstimate, MockProvider, type LlmProvider } from '../agents/llm/index.js';
 import { runLlm } from '../orchestrator/llmHeadless.js';
-import { writeRunArtifacts } from '../orchestrator/persist.js';
-import { InMemoryEventStore } from '../store/index.js';
 import type { DiagnosticReport } from '../orchestrator/diagnostics.js';
 import { botRunRecord, buildRunsCsv, buildAgentsCsv, buildEventsJsonl, buildSummaryMd, buildCompareMd, type RunMeta, type RunRecord } from './analysis.js';
 
@@ -105,13 +103,15 @@ function runBotBatch(seeds: number[], ticks: number): Promise<Map<number, Diagno
 function makeProvider(providerName: string, model: string): LlmProvider {
   switch (providerName) {
     case 'anthropic':
-      return new AnthropicProvider({ model, keys: envKeyProvider() });
+      return new AnthropicProvider({ model, keys: envKeyProvider('ANTHROPIC_API_KEY') });
+    case 'openai':
+      return new OpenAIProvider({ model, keys: envKeyProvider('OPENAI_API_KEY') });
     // A full research run against the mock: costs $0, spends no tokens, and exercises the entire
     // pipeline end to end. This is how you shake out a batch before paying for one.
     case 'mock':
       return new MockProvider(() => '{"action":{"type":"REST"}}', model);
     default:
-      throw new Error(`unknown provider '${providerName}' — Phase 3 ships 'anthropic' and 'mock'. (OpenAI/Google/Ollama are Phase 4: add a sibling of src/agents/llm/anthropic.ts.)`);
+      throw new Error(`unknown provider '${providerName}' — this slice ships 'anthropic', 'openai', and 'mock'. (Google/Ollama are later Phase 4: add a sibling of src/agents/llm/anthropic.ts.)`);
   }
 }
 
@@ -144,13 +144,11 @@ async function runLlmBatch(
   for (const seed of seeds) {
     for (let rep = 0; rep < replicates; rep++) {
       const runId = `${provider.name}-${seed}-r${rep}`;
-      const store = new InMemoryEventStore();
-      const r = await runLlm({ seed, ticks, agentCount, provider, budgetCapUSD: budget, thinkPolicy, topK, store, runId });
-
-      // Persist BEFORE anything else can go wrong. A crash after this point costs a summary row;
-      // a crash before it costs the run's entire paid output.
-      const calls = store.readLlmCalls(runId).map((row) => JSON.parse(row.payload) as LlmCallRecord);
-      const art = writeRunArtifacts(join(outDir, 'runs', runId), store.read(runId), calls);
+      // Persistence is INCREMENTAL now: runLlm appends each tick to this run's dir as it completes,
+      // so even a mid-run crash leaves a complete log up to the last finished tick — not just "before
+      // the next runLlm returns".
+      const r = await runLlm({ seed, ticks, agentCount, provider, budgetCapUSD: budget, thinkPolicy, topK, runId, outDir: join(outDir, 'runs', runId) });
+      const art = r.artifacts!; // outDir was set
       bytes += art.bytes;
 
       out.push({ report: r.report, replicate: rep, provider: r.provider, model: r.model, modelActionFraction: r.modelActionFraction, costUSD: r.costUSD });

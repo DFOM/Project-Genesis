@@ -16,6 +16,14 @@ adapter, the provider seam, the cost gate and the full mock test suite are in an
 What remains is *spending money*: the live smoke test and the paired success run are the
 operator's to trigger, deliberately, after reading the preflight estimate.
 
+**A minimal Phase-4 slice is pulled forward: an OpenAI provider** (`src/agents/llm/openai.ts`),
+behind the same `LlmProvider` seam, because the Anthropic account is out of credits. No roster
+UI, no multi-provider worlds — just `--provider openai --model gpt-4o|gpt-4o-mini` in
+`sim:smoke`/`research`, priced in `pricing.ts`. Also landed with it: **shared transport retry**
+(429/5xx backoff, exhaustion → INVALID) and **incremental per-tick persistence** — a run that
+stops early (budget, error, Ctrl-C) leaves a complete, readable log up to the last finished tick.
+**First live OpenAI smoke command (~$0.64 gpt-4o / ~$0.04 gpt-4o-mini) is the operator's to run.**
+
 **The next action is a decision, not a build:** the success-criterion matrix (6 agents ×
 20 seeds × 3 replicates × 1,200 ticks, `every-tick`) is projected at **$1,920.24** ($32.00/run
 × 60), and the preflight gate refuses it under any smaller cap.
@@ -60,16 +68,24 @@ operator's to trigger, deliberately, after reading the preflight estimate.
 
 ### 🔨 In progress
 
-- *(nothing actively being coded — Phase 3 awaits a spend decision, see above)*
+- *(nothing actively being coded — awaiting a live OpenAI smoke run, then a spend decision)*
 
 ### ⏭️ Next
 
+- **OpenAI live smoke (~$0.64 gpt-4o / ~$0.04 gpt-4o-mini) — do this first, it's cheap.**
+  ```
+  export OPENAI_API_KEY=sk-…
+  npm run sim:smoke -- --provider openai --model gpt-4o --agents 6 --ticks 50 --budget 3
+  ```
+  Confirms the OpenAI adapter parses real responses, the meter is accurate, and the retry/pause
+  paths behave. Persists `events.jsonl` + `llm.jsonl` incrementally. Then
+  `npm run sim:reasoning -- --dir research/smoke-openai-…` to read what it thought.
+  (gpt-4o-mini is ~16× cheaper if you just want to shake the wiring out first.)
 - **Phase 3 verification — costs real money, operator-triggered.**
-  1. **Live smoke (~$1.33) — do this first.**
+  1. **Anthropic live smoke (~$1.33)** — once Anthropic credits are back:
      `export ANTHROPIC_API_KEY=…` then
      `npm run sim:smoke -- --seed 42 --agents 6 --ticks 50 --budget 3`
-     Confirms real responses parse, the gate blocks, the cap pauses, and — the point —
-     prints **preflight vs ACTUAL per token class**, settling the cost model by evidence
+     Prints **preflight vs ACTUAL per token class**, settling the cost model by evidence
      before the batch. Persists `events.jsonl` + `llm.jsonl`.
      Then read a mind: `npm run sim:reasoning -- --dir research/smoke-…`
   2. **Success run (~$1,920):** `npm run research -- --seeds 1-20 --ticks 1200 --replicates 3
@@ -188,6 +204,23 @@ Not yet built — scheduled around Phase 3:
   handed a plausible forgery. To read an old run's prompts, check out its git SHA (in
   `config.json`). Responses and token usage are stored **in full** — those are the model's, not
   ours to regenerate.
+- **Persistence is INCREMENTAL — an early stop keeps everything finished so far.** `runLlm`
+  appends each tick's events and each call's record to disk as they complete (`RunWriter`, via
+  `appendFileSync`), not buffered until the run ends. Budget cap, provider outage, or Ctrl-C leaves
+  a complete, readable log up to the last finished tick; `sim:reasoning`/`sim:prompt` read partial
+  runs fine. Proven with a mock that dies at call 60: the run finished all 40 ticks and all 240
+  prompts still hash-verified.
+- **One bad call never kills a run.** A provider/parse failure on one agent becomes an INVALID →
+  rejection → memory (exactly like malformed output), the tick finishes, the run continues. Failed
+  calls are not billed. Transport retry (429/529/5xx + connection drops, exp backoff) is shared by
+  both providers in `retry.ts`; on exhaustion it throws and llmMind synthesises the INVALID. Retries
+  are invisible to the event log — one REASONED per call, always.
+- **Two providers now, one seam.** `AnthropicProvider` and `OpenAIProvider` are siblings behind
+  `LlmProvider`; adding OpenAI touched nothing outside `src/agents/llm/` + pricing + the CLI
+  provider switch. Both are text-in/text-out (no structured outputs). OpenAI's `prompt_tokens`
+  includes cached tokens (Anthropic's excludes them) — the adapter splits them so pricing is right.
+  Our ~689-token prompt is below both providers' cache minimums, so neither caches (priced at full
+  input, correctly).
 - **better-sqlite3 needs two ABI builds** — Node ABI for tests, Electron ABI for the app.
   Rebuilding one can break the other. Tests use an in-memory store, so the test path never
   needs the native build.

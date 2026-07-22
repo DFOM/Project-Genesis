@@ -16,6 +16,12 @@ export const PRICES: Record<string, ModelPrice> = {
   'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   'claude-sonnet-5': { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   'claude-haiku-4-5': { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+  // OpenAI standard-tier published rates (USD / 1M tokens). `cacheRead` is OpenAI's cached-input
+  // price; `cacheWrite` is 0 because OpenAI auto-caches with no write premium (unlike Anthropic).
+  // Our ~689-token prompt is below OpenAI's 1,024-token auto-cache threshold, so cacheRead is
+  // never actually exercised on this loop — but priced correctly in case the prompt grows.
+  'gpt-4o': { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
+  'gpt-4o-mini': { input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0 },
   // The test double is free. Listed explicitly so the mock path exercises the real pricing code
   // (rather than bypassing it) while costing exactly $0.
   mock: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

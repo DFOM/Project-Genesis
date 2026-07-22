@@ -18,6 +18,11 @@ export const INVALID_REASONS = {
   badField: 'action fields are wrong',
   refused: 'model refused to answer',
   truncated: 'response cut off (too long)',
+  // Transport failure after retries are exhausted (429/5xx/connection). The call never returned a
+  // usable response, so llmMind synthesises an INVALID with this stable category — the agent's turn
+  // is wasted and recorded like any other rejection, and the run rolls on. Categorical (not the raw
+  // error text) so it coalesces in memory by (reason, tile) like every other INVALID.
+  providerError: 'provider unavailable',
 } as const;
 
 const DIRS = new Set<string>(['N', 'S', 'E', 'W']);

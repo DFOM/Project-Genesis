@@ -17,10 +17,9 @@
 // mid-run cap remains the backstop.
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AnthropicProvider, assertAffordable, envKeyProvider, estimateRun, formatEstimate, type LlmCallRecord } from '../agents/llm/index.js';
+import { AnthropicProvider, OpenAIProvider, assertAffordable, envKeyProvider, estimateRun, formatEstimate, type LlmCallRecord, type LlmProvider } from '../agents/llm/index.js';
 import { InMemoryEventStore } from '../store/index.js';
 import { runLlm } from './llmHeadless.js';
-import { writeRunArtifacts } from './persist.js';
 
 function argVal(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -33,35 +32,50 @@ function die(err: unknown): never {
   process.exit(1);
 }
 
+// Provider selection: the surgical Phase-4 slice. `anthropic` (default) or `openai`, chosen at the
+// seam and nowhere else. The default model tracks the provider so `--provider openai` alone gives a
+// sensible cheap model without also needing `--model`.
+function makeProvider(name: string, model: string): LlmProvider {
+  switch (name) {
+    case 'anthropic':
+      return new AnthropicProvider({ model, keys: envKeyProvider('ANTHROPIC_API_KEY') });
+    case 'openai':
+      return new OpenAIProvider({ model, keys: envKeyProvider('OPENAI_API_KEY') });
+    default:
+      throw new Error(`unknown provider '${name}'. This slice ships 'anthropic' and 'openai'.`);
+  }
+}
+
 async function main(): Promise<void> {
   const seed = Number(argVal('seed') ?? '42');
   const agents = Number(argVal('agents') ?? '6');
   const ticks = Number(argVal('ticks') ?? '50');
-  const model = argVal('model') ?? 'claude-opus-4-8';
+  const providerName = argVal('provider') ?? 'anthropic';
+  const model = argVal('model') ?? (providerName === 'openai' ? 'gpt-4o-mini' : 'claude-opus-4-8');
   const budget = Number(argVal('budget') ?? '0');
   if (!(budget > 0)) throw new Error('--budget <USD> is required. There is no default for a command that spends money.');
 
   // ── the gate: nothing is spent before this passes ──────────────────────────
+  // estimateRun looks the model up in pricing.ts, so the OpenAI estimate uses OpenAI rates.
   const est = estimateRun({ agents, ticks, runs: 1, thinkRate: 1, model });
   process.stderr.write(`${formatEstimate(est, budget)}\n\n`);
   assertAffordable(est, budget, hasFlag('confirm-cost'));
 
-  const provider = new AnthropicProvider({ model, keys: envKeyProvider() });
+  const provider = makeProvider(providerName, model);
   const store = new InMemoryEventStore();
   const runId = `smoke-${seed}`;
-  process.stderr.write(`LIVE: ${agents} agents × ${ticks} ticks × seed ${seed} (${model}) — spending up to $${budget.toFixed(2)}\n\n`);
+  // outDir is fixed BEFORE the run so persistence is incremental: if the run is killed, everything
+  // completed so far is already here and readable by sim:reasoning.
+  const outDir = join('research', `smoke-${providerName}-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+  process.stderr.write(`LIVE: ${agents} agents × ${ticks} ticks × seed ${seed} (${providerName}/${model}) — spending up to $${budget.toFixed(2)}\n\n`);
 
   const started = Date.now();
-  const r = await runLlm({ seed, ticks, agentCount: agents, provider, budgetCapUSD: budget, thinkPolicy: 'every-tick', store, runId });
+  const r = await runLlm({ seed, ticks, agentCount: agents, provider, budgetCapUSD: budget, thinkPolicy: 'every-tick', store, runId, outDir });
   const wallMs = Date.now() - started;
 
-  // ── persist everything: the transcript IS the result ───────────────────────
-  // Same writer the research runner uses, so a $1.33 test and a $1,920 batch leave identical
-  // artifact shapes and the same readers work on both.
-  const outDir = join('research', `smoke-${new Date().toISOString().replace(/[:.]/g, '-')}`);
   const events = store.read(runId);
   const calls = store.readLlmCalls(runId).map((row) => JSON.parse(row.payload) as LlmCallRecord);
-  const art = writeRunArtifacts(outDir, events, calls);
+  const art = r.artifacts!; // outDir was set → artifacts present
 
   // ── preflight vs ACTUAL, per token class — this is what corrects the model ──
   const sum = (f: (c: LlmCallRecord) => number): number => calls.reduce((a, c) => a + f(c), 0);
@@ -83,13 +97,15 @@ async function main(): Promise<void> {
   L.push(`    cache read    ${(actualRead / n).toFixed(0)} tok    (estimator assumes 0)`);
   L.push(`    cache write   ${(actualWrite / n).toFixed(0)} tok`);
   L.push('');
-  // The cache claim, settled by evidence rather than by reading the docs.
+  // The cache claim, settled by evidence rather than by reading the docs. Both providers have a
+  // minimum-cacheable-prefix threshold (Opus 4.8: 4,096 tok; OpenAI auto-cache: 1,024 tok) that our
+  // ~689-token prompt sits below, so budget.ts assumes zero cache reads for both.
   L.push(
     actualRead === 0
-      ? '  CACHE: 0 read tokens across every call — confirms the system prompt (~542 tok) is below'
+      ? `  CACHE: 0 read tokens across every call — the ~542-token system prompt is below ${providerName}'s`
       : `  CACHE: ${actualRead} read tokens — the prompt IS caching; budget.ts defaults need updating`,
   );
-  if (actualRead === 0) L.push("        Opus 4.8's 4,096-token minimum. cache_control is inert, as budget.ts assumes.");
+  if (actualRead === 0) L.push('        minimum cacheable prefix, so pricing at full input rate (as budget.ts assumes) is correct.');
   L.push('');
   L.push('RUN');
   L.push(`  ticks completed:     ${r.report.ticks}/${ticks}${r.budgetPaused ? '  ← BUDGET PAUSED' : ''}`);

@@ -11,9 +11,10 @@
 //
 // Not pure, and doesn't need to be: it reads a clock for latency. Determinism lives below it —
 // it only decides WHICH minds think; the seeded rng and every rule stay in the referee.
-import { CostMeter, llmMind, selectThinkers, type LlmProvider, type ThinkPolicy } from '../agents/llm/index.js';
+import { CostMeter, llmMind, selectThinkers, type LlmProvider, type RetryPolicy, type Sleep, type ThinkPolicy } from '../agents/llm/index.js';
 import { InMemoryEventStore, type EventStore } from '../store/index.js';
 import { diagnose, type DiagnosticReport } from './diagnostics.js';
+import { RunWriter, type RunArtifacts } from './persist.js';
 
 export interface LlmRunSpec {
   seed: number;
@@ -26,6 +27,12 @@ export interface LlmRunSpec {
   persona?: 'none' | 'minimal';
   store?: EventStore;
   runId?: string;
+  // When set, the run persists INCREMENTALLY into this directory (events.jsonl + llm.jsonl +
+  // system-prompt.txt), appending as each tick/call completes. An early stop — budget, error,
+  // Ctrl-C — still leaves a complete, readable log up to the last finished tick.
+  outDir?: string;
+  retry?: RetryPolicy; // transport retry; injectable so tests run instantly
+  sleep?: Sleep;
 }
 
 export interface LlmRunResult {
@@ -35,6 +42,7 @@ export interface LlmRunResult {
   model: string;
   costUSD: number;
   llmCalls: number;
+  artifacts?: RunArtifacts; // present when outDir was set — what landed on disk
   // PROVENANCE. The fraction of actions authored by the model rather than the reflex fallback.
   // 1.0 ⇒ every action was the model's, and the run is eligible for the paired comparison against
   // the bot baseline. Below 1.0 ⇒ the run is part-model/part-bot, and comparing it against "bots"
@@ -52,6 +60,10 @@ export async function runLlm(spec: LlmRunSpec): Promise<LlmRunResult> {
   const meter = new CostMeter(spec.budgetCapUSD);
   const tally = { model: 0, reflex: 0 };
 
+  // Incremental persistence, if requested. The writer is fed from two places, both of which fire
+  // as work completes rather than at the end: `onEvents` (per tick) and the sink (per call).
+  const writer = spec.outDir !== undefined ? new RunWriter(spec.outDir) : undefined;
+
   // Recomputed every tick from every living agent's perception; under 'every-tick' it is everyone.
   let thinkers = new Set<string>();
 
@@ -63,14 +75,20 @@ export async function runLlm(spec: LlmRunSpec): Promise<LlmRunResult> {
       llmMind(agentId, {
         provider: spec.provider,
         meter,
-        sink: (r) => store.appendLlmCall(runId, { callRef: r.callRef, tick: r.tick, agentId: r.agentId, payload: JSON.stringify(r) }),
+        sink: (r) => {
+          store.appendLlmCall(runId, { callRef: r.callRef, tick: r.tick, agentId: r.agentId, payload: JSON.stringify(r) });
+          writer?.appendCall(r); // durable the instant the call returns
+        },
         persona: spec.persona ?? 'none',
         shouldThink: (p) => thinkers.has(p.self.id),
         tally,
+        retry: spec.retry,
+        sleep: spec.sleep,
       }),
     beforeTick: (perceptions) => {
       thinkers = selectThinkers(perceptions, spec.thinkPolicy, spec.topK ?? perceptions.length);
     },
+    onEvents: (events) => writer?.appendEvents(events), // durable per tick
     // Second line of defense; the preflight gate is the first.
     shouldStop: () => meter.exceeded(),
   });
@@ -83,6 +101,7 @@ export async function runLlm(spec: LlmRunSpec): Promise<LlmRunResult> {
     model: spec.provider.model,
     costUSD: meter.totalUSD,
     llmCalls: meter.callCount,
+    artifacts: writer?.summary(),
     modelActionFraction: acted > 0 ? tally.model / acted : 0,
     modelActions: tally.model,
     reflexActions: tally.reflex,
