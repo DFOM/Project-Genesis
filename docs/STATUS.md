@@ -221,6 +221,14 @@ Not yet built — scheduled around Phase 3:
   includes cached tokens (Anthropic's excludes them) — the adapter splits them so pricing is right.
   Our ~689-token prompt is below both providers' cache minimums, so neither caches (priced at full
   input, correctly).
+- **Bill the id the API RETURNS, not the alias you asked for.** OpenAI resolves `gpt-4o` →
+  `gpt-4o-2024-08-06` (or `-11-20`) and returns that id. The meter prices `res.model`, so the bill
+  is under the resolved snapshot. `pricing.ts` lists both dated snapshots + the mini snapshot,
+  aliased to one rate object each so snapshots can't drift apart. **A returned id with no price
+  THROWS (priceOf), never $0** — because $0 would silently disable the cap on the run you were least
+  sure about. Verified rates against OpenAI's model pages: gpt-4o $2.50/$10.00 (cached $1.25),
+  gpt-4o-mini $0.15/$0.60 (cached $0.075) per 1M. The first smoke attempt refused for exactly this
+  reason (unpriced `gpt-4o-2024-08-06`) — the guard working, now closed.
 - **better-sqlite3 needs two ABI builds** — Node ABI for tests, Electron ABI for the app.
   Rebuilding one can break the other. Tests use an in-memory store, so the test path never
   needs the native build.

@@ -91,6 +91,10 @@ export function llmMind(id: string, opts: LlmMindOptions): Mind {
       }
 
       const proposal: Proposal = parseProposal(res.text, res.stopReason);
+      // Price against `res.model` — the id the API actually RETURNED — not the alias we requested.
+      // OpenAI resolves `gpt-4o` → `gpt-4o-2024-08-06`, and the bill is under the resolved id, so
+      // the meter must be too. If that id has no price, meter.add throws (priceOf) rather than
+      // charging $0 — a missing price hard-refuses; it never silently disables the cap.
       const cost = opts.meter.add(res.model, res.usage);
 
       opts.sink({
